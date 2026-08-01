@@ -133,6 +133,8 @@ class ODM_Photo:
         self.bits_per_sample = None
         self.vignetting_center = None
         self.vignetting_polynomial = None
+        self.dji_optical_center_x = None
+        self.dji_optical_center_y = None
         self.spectral_irradiance = None
         self.horizontal_irradiance = None
         self.irradiance_scale_to_si = None
@@ -338,7 +340,20 @@ class ODM_Photo:
                         'Camera:VignettingPolynomial',
                         'Sentera:VignettingPolynomial',
                     ])
-                    
+
+                    # DJI M3M Image Processing Guide (Eq. 8): the vignetting
+                    # polynomial is centered on the calibrated optical center,
+                    # not on Camera:VignettingCenter
+                    self.set_attr_from_xmp_tag('dji_optical_center_x', xtags, [
+                        '@drone-dji:CalibratedOpticalCenterX',
+                        'drone-dji:CalibratedOpticalCenterX',
+                    ], float)
+
+                    self.set_attr_from_xmp_tag('dji_optical_center_y', xtags, [
+                        '@drone-dji:CalibratedOpticalCenterY',
+                        'drone-dji:CalibratedOpticalCenterY',
+                    ], float)
+
                     self.set_attr_from_xmp_tag('horizontal_irradiance', xtags, [
                         'Camera:HorizontalIrradiance',
                         'DLS:HorizontalIrradiance',
@@ -432,6 +447,15 @@ class ODM_Photo:
                     if self.black_level is None and 'Camera:BlackCurrent' in xtags:
                         self.set_attr_from_xmp_tag('black_level', xtags, [
                             'Camera:BlackCurrent'
+                        ], str)
+                    # DJI M3M stores the black level only in the drone-dji
+                    # namespace, and the DN floor of real frames sits right at
+                    # this value -- the offset is in the data and must be
+                    # subtracted (M3M Image Processing Guide, exposure Eq.)
+                    if self.black_level is None:
+                        self.set_attr_from_xmp_tag('black_level', xtags, [
+                            '@drone-dji:BlackLevel',
+                            'drone-dji:BlackLevel',
                         ], str)
                     if '@drone-dji:ExposureTime' in xtags:
                         self.set_attr_from_xmp_tag('exposure_time', xtags, [
@@ -702,6 +726,14 @@ class ODM_Photo:
             return self.iso_speed / 100.0
 
     def get_vignetting_center(self):
+        # DJI M3M Image Processing Guide (Eq. 8): r is measured from the
+        # calibrated optical center ([drone-dji:CalibratedOpticalCenterX/Y]),
+        # which on the M3M sits ~44px away from Camera:VignettingCenter
+        if self.camera_make == "DJI" and \
+                self.dji_optical_center_x is not None and \
+                self.dji_optical_center_y is not None:
+            return [self.dji_optical_center_x, self.dji_optical_center_y]
+
         if self.vignetting_center:
             parts = self.vignetting_center.split(" ")
             if len(parts) == 2:

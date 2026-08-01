@@ -14,6 +14,47 @@ from skimage.filters import rank, gaussian
 
 # Loosely based on https://github.com/micasense/imageprocessing/blob/master/micasense/utils.py
 
+# DJI sun-sensor (DLS) irradiance smoothing.
+#
+# The M3M stores a per-band, per-frame irradiance reading; dividing by it
+# raw (the previous behavior) trusts that the sensor on the drone sees the
+# same light as the ground below. Under scattered clouds it does not: on a
+# cloudy test flight the frame medians ANTI-correlated (-0.54) with the raw
+# readings, so raw division injects frame-to-frame error into every band
+# ratio. A rolling median over neighboring captures keeps the real slow
+# illumination trend (sun angle, broad overcast) while rejecting the fast
+# sensor-vs-ground flicker, and a sanity clamp around the band median guards
+# the extremes. Units are unchanged from the raw reading.
+_dji_irradiance_map = {}
+DJI_IRRADIANCE_SMOOTH_WINDOW = 7
+
+def prepare_dji_irradiance(photos):
+    global _dji_irradiance_map
+    _dji_irradiance_map = {}
+    by_band = {}
+    for p in photos:
+        if p.camera_make == "DJI" and p.spectral_irradiance is not None \
+                and p.horizontal_irradiance is None:
+            by_band.setdefault(p.band_name, []).append(p)
+
+    half = DJI_IRRADIANCE_SMOOTH_WINDOW // 2
+    for band_name, band_photos in by_band.items():
+        # DJI filenames sort chronologically (DJI_YYYYMMDDHHMMSS_NNNN_...)
+        band_photos.sort(key=lambda p: p.filename)
+        values = np.array([float(p.spectral_irradiance) for p in band_photos])
+        band_median = float(np.median(values))
+        if band_median <= 0:
+            continue
+
+        for i, p in enumerate(band_photos):
+            lo, hi = max(0, i - half), min(len(values), i + half + 1)
+            smoothed = float(np.median(values[lo:hi]))
+            smoothed = min(max(smoothed, 0.2 * band_median), 5.0 * band_median)
+            _dji_irradiance_map[p.filename] = smoothed
+
+        log.INFO("DJI irradiance smoothing: %s captures for band %s (band median %.1f)" % (
+            len(band_photos), band_name, band_median))
+
 def dn_to_radiance(photo, image):
     """
     Convert Digital Number values to Radiance values
@@ -117,6 +158,16 @@ def vignette_map(photo):
 def dn_to_reflectance(photo, image, use_sun_sensor=True):
     radiance = dn_to_radiance(photo, image)
     irradiance = compute_irradiance(photo, use_sun_sensor=use_sun_sensor)
+
+    if photo.camera_make == "DJI":
+        # DJI M3M Image Processing Guide: reflectance-proportional values are
+        # (DN - black) / (gain * exposure) / irradiance -- there is no pi
+        # factor in DJI's model, and the scale is RELATIVE, so clamping at 1.0
+        # would destroy legitimate bright values. Keep only the physical floor.
+        reflectance = radiance / irradiance
+        reflectance[reflectance < 0.0] = 0.0
+        return reflectance.astype("float32")
+
     reflectance = radiance * math.pi / irradiance
     reflectance[reflectance < 0.0] = 0.0
     reflectance[reflectance > 1.0] = 1.0
@@ -126,6 +177,13 @@ def compute_irradiance(photo, use_sun_sensor=True):
     # Thermal (this should never happen, but just in case..)
     if photo.is_thermal():
         return 1.0
+
+    # DJI: prefer the temporally-smoothed sun-sensor irradiance when the
+    # flight-wide map has been prepared (see prepare_dji_irradiance)
+    if photo.camera_make == "DJI":
+        smoothed = _dji_irradiance_map.get(photo.filename)
+        if smoothed is not None:
+            return smoothed
 
     # Some cameras (Micasense, DJI) store the value (nice! just return)
     hirradiance = photo.get_horizontal_irradiance()
@@ -165,6 +223,173 @@ def compute_irradiance(photo, use_sun_sensor=True):
         log.WARNING("No sun sensor values found for %s" % photo.filename)
     
     return 1.0
+
+# Within-frame view-angle normalization.
+#
+# A frame's oblique parts view a canopy at a larger zenith angle than its
+# centre, so they see more foliage and less soil. Red darkens toward the frame
+# edge while NIR brightens (opposite signs, so this is not vignetting), which
+# shifts NDVI by ~0.05 from frame centre to edge. Best-view texturing then
+# tiles that gradient across the orthophoto as patches following the flight
+# lines. Normalizing every pixel to its nadir equivalent removes it.
+#
+# The profile is measured from the flight's own frames rather than assumed:
+# each frame is divided by its own median (removing illumination), then binned
+# by image radius, which maps to view zenith. Scene content averages out over
+# many frames. It is measured on two disjoint halves of the flight and only
+# applied if they agree -- without that control the field's own gradient can
+# masquerade as a view-angle effect.
+#
+# The decision is ALL-OR-NOTHING across bands. Band ratios (NDVI and friends)
+# are what these products are for, so correcting one band while refusing
+# another would change the ratio rather than the geometry -- the same mistake
+# that makes per-band seam leveling print a quilt into NDVI. If any band fails
+# its control, no band is touched.
+VIEW_ANGLE_BINS = 32
+VIEW_ANGLE_MIN_FRAMES = 30
+VIEW_ANGLE_MIN_CORR = 0.8
+VIEW_ANGLE_MAX_DISAGREE = 0.15
+VIEW_ANGLE_CLAMP = (0.6, 1.6)
+
+
+def _view_angle_profile(paths, bin_idx, nbin, decim):
+    from rasterio.enums import Resampling
+    import rasterio
+
+    acc = np.zeros(nbin)
+    n = 0
+    for p in paths:
+        try:
+            with rasterio.open(p) as ds:
+                img = ds.read(1, out_shape=(ds.height // decim, ds.width // decim),
+                              resampling=Resampling.average).astype(np.float64)
+        except Exception:
+            continue
+        ok = np.isfinite(img) & (img > 1e-7)
+        if ok.mean() < 0.5:
+            continue
+        med = np.median(img[ok])
+        if not np.isfinite(med) or med <= 0:
+            continue
+        v = np.where(ok, img / med, np.nan)
+        s = np.bincount(bin_idx.ravel(), weights=np.nan_to_num(v).ravel(), minlength=nbin)
+        c = np.bincount(bin_idx.ravel(), weights=np.isfinite(v).ravel().astype(float),
+                        minlength=nbin)
+        acc += s / np.maximum(c, 1)
+        n += 1
+    return (acc / n if n else None), n
+
+
+def _band_undistorted_paths(undistorted_dir, band):
+    """Undistorted files for a band, tolerant of the extension ODM appends."""
+    try:
+        listing = os.listdir(undistorted_dir)
+    except OSError:
+        return []
+    index = {}
+    for f in listing:
+        index.setdefault(f, f)
+        index.setdefault(os.path.splitext(f)[0], f)
+
+    paths = []
+    for p in band.get('photos', []):
+        f = index.get(p.filename) or index.get(os.path.splitext(p.filename)[0])
+        if f:
+            paths.append(os.path.join(undistorted_dir, f))
+    if paths:
+        return sorted(paths)
+
+    # Fall back to matching on the band suffix in the filenames themselves,
+    # which is how the primary band can otherwise come up empty.
+    suffix = None
+    for p in band.get('photos', []):
+        m = re.search(r"_MS_([A-Za-z]+)\.", p.filename)
+        if m:
+            suffix = m.group(1)
+            break
+    if suffix is None:
+        suffix = {"red": "R", "green": "G", "blue": "B",
+                  "nir": "NIR", "rededge": "RE"}.get(band['name'].lower().replace(" ", ""))
+    if suffix is None:
+        return []
+    tail = "_MS_%s." % suffix
+    return sorted(os.path.join(undistorted_dir, f) for f in listing if tail in f)
+
+
+def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8):
+    """Flatten the view-zenith reflectance gradient inside every frame."""
+    import rasterio
+
+    scale = float(max(width, height))
+    hw, hh = width // decim, height // decim
+    yy, xx = np.mgrid[0:hh, 0:hw]
+    rn = np.hypot(((xx * decim) - (width - 1) / 2.0) / scale,
+                  ((yy * decim) - (height - 1) / 2.0) / scale)
+    rmax = float(rn.max())
+    bin_idx = np.clip((rn / rmax * VIEW_ANGLE_BINS).astype(int), 0, VIEW_ANGLE_BINS - 1)
+
+    # --- measure and gate every band BEFORE touching any of them --------------
+    plans = []
+    for band in multi_camera:
+        name = band['name']
+        paths = _band_undistorted_paths(undistorted_dir, band)
+        if len(paths) < VIEW_ANGLE_MIN_FRAMES:
+            log.WARNING("View-angle normalization: %s has only %s undistorted "
+                        "frames -- skipping correction for ALL bands"
+                        % (name, len(paths)))
+            return
+
+        half = len(paths) // 2
+        p1, n1 = _view_angle_profile(paths[:half], bin_idx, VIEW_ANGLE_BINS, decim)
+        p2, n2 = _view_angle_profile(paths[half:], bin_idx, VIEW_ANGLE_BINS, decim)
+        if p1 is None or p2 is None:
+            log.WARNING("View-angle normalization: %s produced no usable profile "
+                        "-- skipping correction for ALL bands" % name)
+            return
+        p1 = p1 / p1[:3].mean()
+        p2 = p2 / p2[:3].mean()
+        corr = float(np.corrcoef(p1, p2)[0, 1])
+        disagree = float(abs(p1[-3:].mean() - p2[-3:].mean()))
+        if corr < VIEW_ANGLE_MIN_CORR or disagree > VIEW_ANGLE_MAX_DISAGREE:
+            log.WARNING("View-angle normalization: %s failed its control "
+                        "(corr %.2f, edge disagreement %.2f) -- skipping "
+                        "correction for ALL bands to keep band ratios intact"
+                        % (name, corr, disagree))
+            return
+
+        prof = (p1 + p2) / 2.0
+        prof = np.convolve(np.pad(prof, 2, mode="edge"), np.ones(5) / 5.0, mode="valid")
+        prof = np.clip(prof / prof[:3].mean(), *VIEW_ANGLE_CLAMP)
+        log.INFO("View-angle normalization: %s edge/centre %.3f (control corr "
+                 "%.2f, %s+%s frames)" % (name, prof[-3:].mean(), corr, n1, n2))
+        plans.append((name, paths, prof))
+
+    if not plans:
+        return
+
+    # --- every band passed, so apply to every band ---------------------------
+    yyf, xxf = np.mgrid[0:height, 0:width]
+    rnf = np.hypot((xxf - (width - 1) / 2.0) / scale, (yyf - (height - 1) / 2.0) / scale)
+    pos = np.clip(rnf / rmax * VIEW_ANGLE_BINS - 0.5, 0, VIEW_ANGLE_BINS - 1)
+
+    log.INFO("View-angle normalization: all %s bands passed, applying" % len(plans))
+    for name, paths, prof in plans:
+        field = np.interp(pos.ravel(), np.arange(VIEW_ANGLE_BINS),
+                          prof).reshape(height, width).astype(np.float32)
+        for fp in paths:
+            try:
+                with rasterio.open(fp) as ds:
+                    profile, tags = ds.profile, ds.tags()
+                    a = ds.read(1).astype(np.float32)
+                if tags.get("ODM_VIEW_ANGLE_NORM"):
+                    continue
+                a = (a / field).astype(profile["dtype"])
+                with rasterio.open(fp, "w", **profile) as out:
+                    out.write(a, 1)
+                    out.update_tags(ODM_VIEW_ANGLE_NORM="1")
+            except Exception as e:
+                log.WARNING("View-angle normalization failed for %s: %s" % (fp, str(e)))
+
 
 def get_photos_by_band(multi_camera, user_band_name):
     band_name = get_primary_band_name(multi_camera, user_band_name)
@@ -296,12 +521,16 @@ def compute_alignment_matrices(multi_camera, primary_band_name, images_path, s2p
 
             def parallel_compute_homography(p):
                 try:
-                    if len(matrices) >= max_samples:
-                        # log.INFO("Got enough samples for %s (%s)" % (band['name'], max_samples))
-                        return
+                    # Compute a matrix for EVERY capture (no max_samples cap).
+                    # On dual-lens rigs like the DJI M3M the true band offset
+                    # swings with flight heading (~32px NIR<->Red between
+                    # opposing legs from the 30.66mm lens separation), so one
+                    # sampled matrix cannot fit the whole flight. This also
+                    # matches the DJI M3M Image Processing Guide, which aligns
+                    # each capture individually (ECC / feature matching).
 
                     # Find good matrix candidates for alignment
-                
+
                     primary_band_photo = s2p.get(p['filename'])
                     if primary_band_photo is None:
                         log.WARNING("Cannot find primary band photo for %s" % p['filename'])
@@ -314,6 +543,7 @@ def compute_alignment_matrices(multi_camera, primary_band_name, images_path, s2p
                         log.INFO("%s --> %s good match" % (p['filename'], primary_band_photo.filename))
 
                         matrices.append({
+                            'filename': p['filename'],
                             'warp_matrix': warp_matrix,
                             'eigvals': np.linalg.eigvals(warp_matrix),
                             'dimension': dimension,
@@ -341,6 +571,14 @@ def compute_alignment_matrices(multi_camera, primary_band_name, images_path, s2p
             matrices.sort(key=lambda x: x['score'], reverse=False)
             
             if len(matrices) > 0:
+                # Keep a per-capture lookup on the winning entry; captures
+                # without their own match fall back to the consensus matrix.
+                matrices[0]['per_file'] = {
+                    m['filename']: {'warp_matrix': m['warp_matrix'], 'dimension': m['dimension']}
+                    for m in matrices if m.get('filename')
+                }
+                log.INFO("per-capture alignment: %s matrices for band %s" % (
+                    len(matrices[0]['per_file']), band['name']))
                 alignment_info[band['name']] = matrices[0]
                 log.INFO("%s band will be aligned using warp matrix %s (score: %s)" % (band['name'], matrices[0]['warp_matrix'], matrices[0]['score']))
             else:

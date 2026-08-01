@@ -61,6 +61,17 @@ class ODMMvsTexStage(types.ODM_Stage):
         else:
             add_run(tree.opensfm_reconstruction_nvm)
         
+        # DJI multispectral: mvs-texturing's global+local seam leveling retones
+        # each texture patch independently PER BAND, which perturbs the NIR/Red
+        # ratio patch-by-patch and prints a visible quilt into NDVI and other
+        # band-ratio indices. Force both levelings off for these datasets.
+        # (--texturing-skip-local-seam-leveling was removed from the CLI, but
+        # texrecon still supports the flag.)
+        force_skip_seam_leveling = reconstruction.multi_camera and \
+            any(p.camera_make == "DJI" for p in reconstruction.photos)
+        if force_skip_seam_leveling:
+            log.INFO("DJI multispectral: skipping global+local texturing seam leveling to preserve band ratios")
+
         progress_per_run = 100.0 / len(nonloc.runs)
         progress = 0.0
 
@@ -80,11 +91,15 @@ class ODMMvsTexStage(types.ODM_Stage):
 
                 # Format arguments to fit Mvs-Texturing app
                 skipGlobalSeamLeveling = ""
+                skipLocalSeamLeveling = ""
                 keepUnseenFaces = ""
                 nadir = ""
 
                 if args.texturing_skip_global_seam_leveling:
                     skipGlobalSeamLeveling = "--skip_global_seam_leveling"
+                if force_skip_seam_leveling:
+                    skipGlobalSeamLeveling = "--skip_global_seam_leveling"
+                    skipLocalSeamLeveling = "--skip_local_seam_leveling"
                 if args.texturing_keep_unseen_faces:
                     keepUnseenFaces = "--keep_unseen_faces"
                 if (r['nadir']):
@@ -96,8 +111,13 @@ class ODMMvsTexStage(types.ODM_Stage):
                     'out_dir': os.path.join(r['out_dir'], "odm_textured_model_geo"),
                     'model': r['model'],
                     'dataTerm': 'gmi',
-                    'outlierRemovalType': 'gauss_clamping',
+                    # gauss_clamping is a photometric outlier remover aimed at
+                    # pedestrians/vehicles in urban scenes; on multispectral
+                    # reflectance it manipulates values per band. texrecon's own
+                    # default is none.
+                    'outlierRemovalType': 'none' if force_skip_seam_leveling else 'gauss_clamping',
                     'skipGlobalSeamLeveling': skipGlobalSeamLeveling,
+                    'skipLocalSeamLeveling': skipLocalSeamLeveling,
                     'keepUnseenFaces': keepUnseenFaces,
                     'toneMapping': 'none',
                     'nadirMode': nadir,
@@ -121,6 +141,7 @@ class ODMMvsTexStage(types.ODM_Stage):
                         '-t {toneMapping} '
                         '{intermediate} '
                         '{skipGlobalSeamLeveling} '
+                        '{skipLocalSeamLeveling} '
                         '{keepUnseenFaces} '
                         '{nadirMode} '
                         '{labelingFile} '
