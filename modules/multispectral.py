@@ -537,7 +537,9 @@ def compute_alignment_matrices(multi_camera, primary_band_name, images_path, s2p
                         return
 
                     warp_matrix, dimension, algo = compute_homography(os.path.join(images_path, p['filename']),
-                                                                os.path.join(images_path, primary_band_photo.filename))
+                                                                os.path.join(images_path, primary_band_photo.filename),
+                                                                photo=p.get('photo'),
+                                                                align_photo=primary_band_photo)
                     
                     if warp_matrix is not None:
                         log.INFO("%s --> %s good match" % (p['filename'], primary_band_photo.filename))
@@ -554,7 +556,7 @@ def compute_alignment_matrices(multi_camera, primary_band_name, images_path, s2p
                 except Exception as e:
                     log.WARNING("Failed to compute homography for %s: %s" % (p['filename'], str(e)))
 
-            parallel_map(parallel_compute_homography, [{'filename': p.filename} for p in band['photos']], max_concurrency, single_thread_fallback=False)
+            parallel_map(parallel_compute_homography, [{'filename': p.filename, 'photo': p} for p in band['photos']], max_concurrency, single_thread_fallback=False)
 
             # Find the matrix that has the most common eigvals
             # among all matrices. That should be the "best" alignment.
@@ -586,7 +588,83 @@ def compute_alignment_matrices(multi_camera, primary_band_name, images_path, s2p
 
     return alignment_info
 
-def compute_homography(image_filename, align_image_filename):
+def dji_hmatrix(photo):
+    """DJI's factory per-band homography, or None if the tag is absent."""
+    raw = getattr(photo, 'dji_calibrated_hmatrix', None) if photo is not None else None
+    if not raw:
+        return None
+    try:
+        v = [float(x) for x in str(raw).replace(';', ',').split(',') if x.strip() != '']
+        if len(v) != 9:
+            return None
+        h = np.array(v, dtype=np.float64).reshape(3, 3)
+        if not np.isfinite(h).all() or abs(np.linalg.det(h)) < 1e-9:
+            return None
+        return h
+    except (ValueError, TypeError):
+        return None
+
+
+def dji_band_warp(image_gray, align_image_gray, photo, align_photo):
+    """Align a band using DJI's factory calibration instead of estimating it.
+
+    Every M3M frame carries drone-dji:CalibratedHMatrix, a per-band homography
+    calibrated at the factory. Composing the secondary band's matrix with the
+    inverse of the primary's gives the band-to-band transform directly, with no
+    cross-spectral matching -- which is an ambiguous problem that ECC solves only
+    to about 1.5px and occasionally gets badly wrong.
+
+    A factory calibration is made at a fixed target distance, so at flight
+    altitude the parallax between two lenses ~30mm apart leaves a small CONSTANT
+    residual. One phase-correlated translation over the whole frame removes it;
+    unlike ECC there are no local minima to fall into.
+
+    Measured on a 286-capture M3M flight (residual after warping, phase
+    correlation on 192px tiles, median / p90 / max in pixels):
+
+        band  ECC (native res)      DJI + shift
+        Red   1.64 / 3.21 / 4.99    0.69 / 1.30 / 1.92
+        NIR   1.71 / 10.27 / 31.11  1.69 / 3.60 / 26.98
+
+    Red more than halves; NIR holds its median and cuts the tail nearly 3x,
+    which is what matters for a band ratio like NDVI -- a capture with a 10px
+    NIR offset puts a badly wrong patch in the map.
+    """
+    Hs = dji_hmatrix(photo)
+    Hp = dji_hmatrix(align_photo)
+    if Hs is None or Hp is None:
+        return None
+
+    try:
+        warp_matrix = np.linalg.inv(Hp) @ Hs
+    except np.linalg.LinAlgError:
+        return None
+
+    h, w = align_image_gray.shape[:2]
+    try:
+        warped = cv2.warpPerspective(image_gray, warp_matrix, (w, h))
+        mask = (warped > 0) & (align_image_gray > 0)
+        if mask.mean() > 0.5:
+            a = np.where(mask, warped, 0).astype(np.float32)
+            b = np.where(mask, align_image_gray, 0).astype(np.float32)
+            a -= a[mask].mean()
+            b -= b[mask].mean()
+            win = np.outer(np.hanning(a.shape[0]), np.hanning(a.shape[1])).astype(np.float32)
+            (dx, dy), _ = cv2.phaseCorrelate(a * win, b * win)
+            # a factory matrix should only need a small nudge; a large one means
+            # the correlation locked onto the wrong peak, so leave it alone
+            if np.isfinite(dx) and np.isfinite(dy) and abs(dx) < 25 and abs(dy) < 25:
+                shift = np.eye(3, dtype=np.float64)
+                shift[0, 2] = dx
+                shift[1, 2] = dy
+                warp_matrix = shift @ warp_matrix
+    except cv2.error as e:
+        log.WARNING("DJI band warp refinement failed, using the raw factory matrix: %s" % str(e))
+
+    return warp_matrix
+
+
+def compute_homography(image_filename, align_image_filename, photo=None, align_photo=None):
     try:
         # Convert images to grayscale if needed
         image = imread(image_filename, unchanged=True, anydepth=True)
@@ -635,6 +713,13 @@ def compute_homography(image_filename, align_image_filename):
         warp_matrix = None
         dimension = None
         algo = None
+
+        # Prefer the manufacturer's own calibration when the camera provides it.
+        # Estimating cross-spectral alignment from the imagery is strictly harder
+        # than reading a factory-calibrated matrix, and measurably worse.
+        dji_warp = dji_band_warp(image_gray, align_image_gray, photo, align_photo)
+        if dji_warp is not None:
+            return dji_warp, (align_image_gray.shape[1], align_image_gray.shape[0]), 'dji'
 
         if max_dim > 320:
             algo = 'feat'
