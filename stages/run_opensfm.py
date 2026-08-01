@@ -132,6 +132,11 @@ class ODMOpenSfMStage(types.ODM_Stage):
 
             ainfo = alignment_info.get(photo.band_name)
             if ainfo is not None:
+                # Per-capture matrix when this capture produced its own match;
+                # consensus matrix as the fallback
+                ent = (ainfo.get('per_file') or {}).get(photo.filename)
+                if ent is not None:
+                    return multispectral.align_image(image, ent['warp_matrix'], ent['dimension'])
                 return multispectral.align_image(image, ainfo['warp_matrix'], ainfo['dimension'])
             else:
                 log.WARNING("Cannot align %s, no alignment matrix could be computed. Band alignment quality might be affected." % (shot_id))
@@ -142,6 +147,9 @@ class ODMOpenSfMStage(types.ODM_Stage):
             undistort_pipeline.append(resize_thermal_images)
 
         if args.radiometric_calibration != "none":
+            # DJI: precompute the flight-wide smoothed sun-sensor irradiance
+            # (no-op for other cameras / when the tags are absent)
+            multispectral.prepare_dji_irradiance(photos)
             undistort_pipeline.append(radiometric_calibrate)
         
         image_list_override = None
@@ -179,6 +187,16 @@ class ODMOpenSfMStage(types.ODM_Stage):
             undistort_pipeline.append(align_to_primary_band)
 
         octx.convert_and_undistort(self.rerun(), undistort_callback, image_list_override)
+
+        # DJI multispectral: flatten the view-zenith gradient inside each frame,
+        # otherwise best-view texturing tiles it across the orthophoto as
+        # patches along the flight lines (see normalize_view_angle)
+        if reconstruction.multi_camera and largest_photo is not None and \
+                any(p.camera_make == "DJI" for p in photos):
+            multispectral.normalize_view_angle(
+                octx.path("undistorted", "images"),
+                reconstruction.multi_camera,
+                largest_photo.width, largest_photo.height)
 
         self.update_progress(95)
 
