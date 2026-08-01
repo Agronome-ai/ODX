@@ -639,11 +639,17 @@ def compute_homography(image_filename, align_image_filename):
         if max_dim > 320:
             algo = 'feat'
             result = compute_using(find_features_homography)
-            
+
             if result[0] is None:
                 algo = 'ecc'
                 log.INFO("Can't use features matching, will use ECC (this might take a bit)")
-                result = compute_using(find_ecc_homography)
+                # Solve at native resolution; ECC occasionally refuses to converge
+                # at full size on low-contrast frames, so keep the old downscaled
+                # solve as a fallback rather than dropping the capture entirely.
+                result = compute_using(lambda a, b: find_ecc_homography(a, b, max_size=ECC_MAX_SIZE_NATIVE))
+                if result[0] is None:
+                    log.INFO("ECC did not converge at native resolution, retrying downscaled")
+                    result = compute_using(lambda a, b: find_ecc_homography(a, b, max_size=ECC_MAX_SIZE_FALLBACK))
                 if result[0] is None:
                     algo = None
 
@@ -661,13 +667,29 @@ def compute_homography(image_filename, align_image_filename):
         log.WARNING("Compute homography: %s" % str(e))
         return None, (None, None), None
 
-def find_ecc_homography(image_gray, align_image_gray, number_of_iterations=1000, termination_eps=1e-8, start_eps=1e-4):
+# Working resolution for the ECC band-alignment solve.
+#
+# The historical cap was 2048, but a DJI M3M frame is 2592x1944, so every solve
+# ran at 1296x972 and the resulting warp matrix was then scaled back up by 2 --
+# doubling every sub-pixel error. Measured residual band misalignment over 10
+# captures (phase correlation on 256px tiles after applying the warp):
+#
+#   cap 2048 (half res):  median 1.87 px, p90 4.92 px, max 9.54 px
+#   cap 4096 (native):    median 1.40 px, p90 2.54 px, max 4.35 px
+#
+# That matters more than it looks: NDVI is a band ratio, so a Red/NIR offset puts
+# a spurious value on every leaf edge. Measured in the orthophoto, our Red->NIR
+# p90 was 15.5 cm against Pix4D's 5.7 cm.
+ECC_MAX_SIZE_NATIVE = 4096
+ECC_MAX_SIZE_FALLBACK = 2048
+
+
+def find_ecc_homography(image_gray, align_image_gray, number_of_iterations=1000, termination_eps=1e-8, start_eps=1e-4, max_size=ECC_MAX_SIZE_NATIVE):
     pyramid_levels = 0
     h,w = image_gray.shape
     max_dim = max(h, w)
     downscale = 0
 
-    max_size = 2048
     while max_dim / (2**downscale) > max_size:
         downscale += 1
 
