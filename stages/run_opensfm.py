@@ -188,24 +188,32 @@ class ODMOpenSfMStage(types.ODM_Stage):
 
         octx.convert_and_undistort(self.rerun(), undistort_callback, image_list_override)
 
+        self.update_progress(95)
+
+        if reconstruction.multi_camera:
+            octx.restore_reconstruction_backup()
+
+            # Undistort primary band and write undistorted
+            # reconstruction.json, tracks.csv
+            octx.convert_and_undistort(self.rerun(), undistort_callback, runId='primary')
+
         # DJI multispectral: flatten the view-zenith gradient inside each frame,
         # otherwise best-view texturing tiles it across the orthophoto as
-        # patches along the flight lines (see normalize_view_angle)
+        # patches along the flight lines (see normalize_view_angle).
+        #
+        # This MUST run after the 'primary' pass above, not after the first one.
+        # The first convert_and_undistort writes only the secondary bands; the
+        # primary band is written by the primary pass. Called any earlier, the
+        # primary band has zero undistorted frames on disk, and the all-or-
+        # nothing control gate then correctly refuses to correct any band --
+        # silently disabling the correction on every M3M flight, since Green is
+        # the primary band there.
         if reconstruction.multi_camera and largest_photo is not None and \
                 any(p.camera_make == "DJI" for p in photos):
             multispectral.normalize_view_angle(
                 octx.path("undistorted", "images"),
                 reconstruction.multi_camera,
                 largest_photo.width, largest_photo.height)
-
-        self.update_progress(95)
-
-        if reconstruction.multi_camera:
-            octx.restore_reconstruction_backup()
-
-            # Undistort primary band and write undistorted 
-            # reconstruction.json, tracks.csv
-            octx.convert_and_undistort(self.rerun(), undistort_callback, runId='primary')
 
         if not io.file_exists(tree.opensfm_reconstruction_nvm) or self.rerun():
             octx.run('export_visualsfm --points')
