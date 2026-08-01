@@ -135,6 +135,9 @@ class ODM_Photo:
         self.vignetting_polynomial = None
         self.dji_optical_center_x = None
         self.dji_optical_center_y = None
+        # drone-dji:CalibratedHMatrix -- DJI's factory per-band homography,
+        # calibrated on a test target. Comma-separated, row-major 3x3.
+        self.dji_calibrated_hmatrix = None
         self.spectral_irradiance = None
         self.horizontal_irradiance = None
         self.irradiance_scale_to_si = None
@@ -353,6 +356,11 @@ class ODM_Photo:
                         '@drone-dji:CalibratedOpticalCenterY',
                         'drone-dji:CalibratedOpticalCenterY',
                     ], float)
+
+                    self.set_attr_from_xmp_tag('dji_calibrated_hmatrix', xtags, [
+                        '@drone-dji:CalibratedHMatrix',
+                        'drone-dji:CalibratedHMatrix',
+                    ], str)
 
                     self.set_attr_from_xmp_tag('horizontal_irradiance', xtags, [
                         'Camera:HorizontalIrradiance'
