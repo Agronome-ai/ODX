@@ -379,6 +379,135 @@ def _frame_signs(multi_camera):
     return signs
 
 
+def _ramp_profile_groundfree(opensfm_dir, paths, signs, nbin, max_tracks=40000, win=2):
+    """The across-swath ramp, measured so the field's own gradient cannot enter.
+
+    Fitting the ramp from single frames does not work. A gradient fixed in the
+    world lands on the same signed coordinate as the solar ramp -- both are
+    consistent in world terms once the heading sign is applied -- so the
+    estimator absorbs real crop variation. Measured, it inflates the ramp by
+    about 2x, and correcting at that strength strips real signal out of the map,
+    worst at the field boundary where there is no adjacent pass.
+
+    Using pairs of observations of the SAME physical point removes the ground
+    exactly, because it is common to both:
+
+        v_i / v_j = F(s_i) / F(s_j)
+
+    Adjacent passes are what make this work: they see their shared strip from
+    opposite swath edges, so the pairs span a wide range of s.
+
+    SfM tracks provide the correspondences -- a track is a set of observations
+    that feature matching asserts are the same point, with no surface model and
+    no orthophoto involved.
+
+    Solved for log F per bin, forced antisymmetric (the symmetric part belongs to
+    the radial profile) and zero-mean (only ratios are observed, so the overall
+    level is not constrained).
+
+    On a 286-capture flight this gave amplitude 0.323 against 0.576 for the
+    single-frame estimate on the same frames -- a ratio of 0.56, with the two
+    disjoint halves of the pairs agreeing at r = 1.00.
+    """
+    from collections import defaultdict
+    import rasterio
+
+    try:
+        from opensfm import dataset
+        data = dataset.DataSet(os.path.join(opensfm_dir))
+        tm = data.load_tracks_manager()
+        rec = data.load_reconstruction()[0]
+    except Exception as e:
+        log.WARNING("View-angle ramp: cannot load tracks (%s)" % str(e))
+        return None, 0
+
+    cam = list(rec.cameras.values())[0]
+    w_cam, h_cam = cam.width, cam.height
+    scale = float(max(w_cam, h_cam))
+
+    by_key = {}
+    for p in paths:
+        by_key[_capture_key(p)] = p
+
+    ids = list(tm.get_track_ids())
+    rng = np.random.default_rng(0)
+    if len(ids) > max_tracks:
+        ids = [ids[i] for i in rng.choice(len(ids), max_tracks, replace=False)]
+
+    per_shot = defaultdict(list)
+    for ti in ids:
+        obs = tm.get_track_observations(ti)
+        if len(obs) < 2:
+            continue
+        for sid, o in obs.items():
+            per_shot[sid].append((ti,
+                                  o.point[0] * scale + (w_cam - 1) / 2.0,
+                                  o.point[1] * scale + (h_cam - 1) / 2.0))
+
+    vals = defaultdict(list)
+    for sid, items in per_shot.items():
+        key = _capture_key(sid)
+        sgn = signs.get(key)
+        path = by_key.get(key)
+        if not sgn or path is None:
+            continue
+        try:
+            with rasterio.open(path) as ds:
+                img = ds.read(1).astype(np.float32)
+        except Exception:
+            continue
+        h, w = img.shape
+        for ti, px, py in items:
+            x, y = int(round(px)), int(round(py))
+            if x < win or y < win or x >= w - win or y >= h - win:
+                continue
+            patch = img[y - win:y + win + 1, x - win:x + win + 1]
+            m = np.isfinite(patch) & (patch > 1e-7)
+            if m.sum() < 9:
+                continue
+            s = sgn * ((x + 0.5) / w * 2.0 - 1.0)
+            vals[ti].append((s, float(patch[m].mean())))
+
+    pairs = []
+    for ti, obs in vals.items():
+        for a in range(len(obs)):
+            for b in range(a + 1, len(obs)):
+                s1, v1 = obs[a]
+                s2, v2 = obs[b]
+                if v1 <= 0 or v2 <= 0:
+                    continue
+                i1 = int(np.clip((s1 + 1) / 2 * nbin, 0, nbin - 1))
+                i2 = int(np.clip((s2 + 1) / 2 * nbin, 0, nbin - 1))
+                if i1 != i2:
+                    pairs.append((i1, i2, float(np.log(v1 / v2))))
+    if len(pairs) < 500:
+        log.WARNING("View-angle ramp: only %s cross-swath pairs" % len(pairs))
+        return None, len(pairs)
+
+    def solve(pp):
+        A = np.zeros((len(pp) + nbin, nbin))
+        rhs = np.zeros(len(pp) + nbin)
+        for r, (i1, i2, d) in enumerate(pp):
+            A[r, i1] += 1.0
+            A[r, i2] -= 1.0
+            rhs[r] = d
+        lam = np.sqrt(len(pp) / float(nbin))
+        for j in range(nbin):
+            A[len(pp) + j, j] += lam
+            A[len(pp) + j, nbin - 1 - j] += lam
+        f = np.linalg.lstsq(A, rhs, rcond=None)[0]
+        f = (f - f[::-1]) / 2.0
+        return f - f.mean()
+
+    perm = np.random.default_rng(1).permutation(len(pairs))
+    h1 = [pairs[i] for i in perm[:len(perm) // 2]]
+    h2 = [pairs[i] for i in perm[len(perm) // 2:]]
+    f1, f2 = solve(h1), solve(h2)
+    corr = float(np.corrcoef(f1, f2)[0, 1])
+    prof = np.exp(solve(pairs)) - 1.0
+    return (prof, corr), len(pairs)
+
+
 def _ramp_profile(paths, signs, nbin, decim, width):
     """Mean normalised value against signed across-swath position.
 
@@ -472,7 +601,8 @@ def _band_undistorted_paths(undistorted_dir, band):
     return sorted(os.path.join(undistorted_dir, f) for f in listing if tail in f)
 
 
-def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8):
+def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8,
+                         opensfm_dir=None):
     """Flatten the view-zenith reflectance gradient inside every frame."""
     import rasterio
 
@@ -528,30 +658,39 @@ def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8):
         # the radial correction, which passed a control of its own.
         ramp = None
         if signs and ramp_ok:
-            r1, m1 = _ramp_profile(paths[:half], signs, RAMP_BINS, decim, width)
-            r2, m2 = _ramp_profile(paths[half:], signs, RAMP_BINS, decim, width)
-            if r1 is None or r2 is None:
-                log.WARNING("View-angle ramp: %s produced no usable profile -- "
-                            "skipping the ramp for ALL bands (radial still applies)"
-                            % name)
+            if not opensfm_dir:
+                # The single-frame estimate cannot separate the solar ramp from
+                # the field's own gradient and inflates it about 2x. Applying a
+                # knowingly over-strong correction is worse than none, so without
+                # tracks the ramp is refused rather than approximated.
+                log.INFO("View-angle ramp: no tracks available, skipping the ramp "
+                         "(the single-frame estimate would over-correct)")
                 ramp_ok = False
             else:
-                rcorr = float(np.corrcoef(r1, r2)[0, 1])
-                amp = float(np.nanmax(r1 + r2) - np.nanmin(r1 + r2)) / 2.0
-                if rcorr < RAMP_MIN_CORR or not np.isfinite(amp) or amp > RAMP_MAX_AMPLITUDE:
-                    log.WARNING("View-angle ramp: %s failed its control (corr %.2f, "
-                                "amplitude %.3f) -- skipping the ramp for ALL bands "
-                                "to keep band ratios intact (radial still applies)"
-                                % (name, rcorr, amp))
+                res, npairs = _ramp_profile_groundfree(opensfm_dir, paths, signs,
+                                                       RAMP_BINS)
+                if res is None:
+                    log.WARNING("View-angle ramp: %s produced no usable profile -- "
+                                "skipping the ramp for ALL bands (radial still applies)"
+                                % name)
                     ramp_ok = False
                 else:
-                    ramp = (r1 + r2) / 2.0
-                    ramp = np.convolve(np.pad(ramp, 2, mode="edge"),
-                                       np.ones(5) / 5.0, mode="valid")
-                    ramp = ramp - ramp.mean()   # antisymmetric already; enforce zero mean
-                    log.INFO("View-angle ramp: %s across-swath %+.3f .. %+.3f "
-                             "(control corr %.2f, %s+%s frames)"
-                             % (name, ramp[0], ramp[-1], rcorr, m1, m2))
+                    prof_r, rcorr = res
+                    amp = float(np.nanmax(prof_r) - np.nanmin(prof_r))
+                    if rcorr < RAMP_MIN_CORR or not np.isfinite(amp) \
+                            or amp > RAMP_MAX_AMPLITUDE:
+                        log.WARNING("View-angle ramp: %s failed its control (corr "
+                                    "%.2f, amplitude %.3f) -- skipping the ramp for "
+                                    "ALL bands to keep band ratios intact (radial "
+                                    "still applies)" % (name, rcorr, amp))
+                        ramp_ok = False
+                    else:
+                        ramp = np.convolve(np.pad(prof_r, 2, mode="edge"),
+                                           np.ones(5) / 5.0, mode="valid")
+                        ramp = ramp - ramp.mean()
+                        log.INFO("View-angle ramp: %s across-swath %+.3f .. %+.3f "
+                                 "(ground-free, control corr %.2f, %s pairs)"
+                                 % (name, ramp[0], ramp[-1], rcorr, npairs))
         plans.append((name, paths, prof, ramp))
 
     if not plans:
