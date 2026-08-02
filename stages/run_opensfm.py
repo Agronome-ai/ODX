@@ -213,7 +213,8 @@ class ODMOpenSfMStage(types.ODM_Stage):
             multispectral.normalize_view_angle(
                 octx.path("undistorted", "images"),
                 reconstruction.multi_camera,
-                largest_photo.width, largest_photo.height)
+                largest_photo.width, largest_photo.height,
+                opensfm_dir=octx.path())
 
         if not io.file_exists(tree.opensfm_reconstruction_nvm) or self.rerun():
             octx.run('export_visualsfm --points')
