@@ -279,7 +279,13 @@ VIEW_ANGLE_CLAMP = (0.6, 1.6)
 # NDVI -- a gain common to both bands would cancel in the ratio.
 RAMP_BINS = 16
 RAMP_MIN_CORR = 0.7          # two disjoint halves of the flight must agree
-RAMP_MAX_AMPLITUDE = 0.5     # refuse implausible fits
+# Runaway guard, not a plausibility limit. The measured Red amplitude on a real
+# M3M flight is 0.57, which two independent instruments agree with: it predicts
+# the 0.024 NDVI ramp seen in the orthophoto, and it matches the BRDF measured
+# from view-angle separation (26.5% at 20-30 degrees, and frame edges sit near 30
+# degrees zenith). Set well above that so a genuine correction is not refused,
+# but low enough to catch a fit that has gone wrong.
+RAMP_MAX_AMPLITUDE = 0.9
 RAMP_MIN_SPEED = 1.5         # m/s below which a frame has no meaningful heading
 
 
@@ -479,6 +485,7 @@ def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8):
     bin_idx = np.clip((rn / rmax * VIEW_ANGLE_BINS).astype(int), 0, VIEW_ANGLE_BINS - 1)
 
     signs = _frame_signs(multi_camera)
+    ramp_ok = True
 
     # --- measure and gate every band BEFORE touching any of them --------------
     plans = []
@@ -515,32 +522,42 @@ def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8):
         log.INFO("View-angle normalization: %s edge/centre %.3f (control corr "
                  "%.2f, %s+%s frames)" % (name, prof[-3:].mean(), corr, n1, n2))
 
-        # across-swath ramp, gated on its own two-disjoint-halves control
+        # Across-swath ramp, gated on its own two-disjoint-halves control.
+        # A ramp failure disables the ramp for EVERY band -- applying it to some
+        # bands and not others would break band ratios -- but it must NOT discard
+        # the radial correction, which passed a control of its own.
         ramp = None
-        if signs:
+        if signs and ramp_ok:
             r1, m1 = _ramp_profile(paths[:half], signs, RAMP_BINS, decim, width)
             r2, m2 = _ramp_profile(paths[half:], signs, RAMP_BINS, decim, width)
             if r1 is None or r2 is None:
                 log.WARNING("View-angle ramp: %s produced no usable profile -- "
-                            "skipping the ramp for ALL bands" % name)
-                return
-            rcorr = float(np.corrcoef(r1, r2)[0, 1])
-            amp = float(np.nanmax(r1 + r2) - np.nanmin(r1 + r2)) / 2.0
-            if rcorr < RAMP_MIN_CORR or not np.isfinite(amp) or amp > RAMP_MAX_AMPLITUDE:
-                log.WARNING("View-angle ramp: %s failed its control (corr %.2f, "
-                            "amplitude %.3f) -- skipping the ramp for ALL bands "
-                            "to keep band ratios intact" % (name, rcorr, amp))
-                return
-            ramp = (r1 + r2) / 2.0
-            ramp = np.convolve(np.pad(ramp, 2, mode="edge"), np.ones(5) / 5.0, mode="valid")
-            ramp = ramp - ramp.mean()      # antisymmetric already; enforce zero mean
-            log.INFO("View-angle ramp: %s across-swath %+.3f .. %+.3f "
-                     "(control corr %.2f, %s+%s frames)"
-                     % (name, ramp[0], ramp[-1], rcorr, m1, m2))
+                            "skipping the ramp for ALL bands (radial still applies)"
+                            % name)
+                ramp_ok = False
+            else:
+                rcorr = float(np.corrcoef(r1, r2)[0, 1])
+                amp = float(np.nanmax(r1 + r2) - np.nanmin(r1 + r2)) / 2.0
+                if rcorr < RAMP_MIN_CORR or not np.isfinite(amp) or amp > RAMP_MAX_AMPLITUDE:
+                    log.WARNING("View-angle ramp: %s failed its control (corr %.2f, "
+                                "amplitude %.3f) -- skipping the ramp for ALL bands "
+                                "to keep band ratios intact (radial still applies)"
+                                % (name, rcorr, amp))
+                    ramp_ok = False
+                else:
+                    ramp = (r1 + r2) / 2.0
+                    ramp = np.convolve(np.pad(ramp, 2, mode="edge"),
+                                       np.ones(5) / 5.0, mode="valid")
+                    ramp = ramp - ramp.mean()   # antisymmetric already; enforce zero mean
+                    log.INFO("View-angle ramp: %s across-swath %+.3f .. %+.3f "
+                             "(control corr %.2f, %s+%s frames)"
+                             % (name, ramp[0], ramp[-1], rcorr, m1, m2))
         plans.append((name, paths, prof, ramp))
 
     if not plans:
         return
+    if not ramp_ok:
+        plans = [(n, p, pr, None) for n, p, pr, _ in plans]
 
     # --- every band passed, so apply to every band ---------------------------
     yyf, xxf = np.mgrid[0:height, 0:width]
