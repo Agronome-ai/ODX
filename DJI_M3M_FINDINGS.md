@@ -33,6 +33,11 @@ Passing **any** value to `--matcher-neighbors` turns off graph-based matching
 entirely. The help text describes it as a limit on how many neighbours to match
 against; it does not say that setting it swaps the matching *strategy*.
 
+> The `20` above is ODX 3.8.2. The same code in ODM 3.6.0 uses **50**, which we
+> only noticed because we quoted "20" in a comment describing a build that was
+> actually running ODM and it disagreed with the log. If anyone documents this,
+> the round count is worth stating per version rather than as a constant.
+
 We had `--matcher-neighbors 16` set deliberately, believing it was a restriction
 that would help on repetitive row crops. Measured on a 286-capture M3M flight,
 against a Pix4Dfields export of the same flight:
@@ -237,6 +242,37 @@ Implemented against the *DJI Mavic 3M Image Processing Guide* (2026 edition).
 
 ---
 
+## 4b. ODX is protected from a DJI M3M EXIF crash that ODM is not
+
+Not an ODX bug — the opposite. Recording it because it took us a while to work
+out, and because it may be worth an upstream issue on the ODM side.
+
+`requirements.txt`:
+
+```
+ODX  ODMExifRead==3.0.4     # OpenDroneMap's fork
+ODM  ExifRead==3.5.1        # upstream
+```
+
+Both install as the `exifread` module, so the version numbers look like ODX is
+simply older. They are different packages on independent version lines.
+
+Upstream `ExifRead` narrowed the guard around `decode_maker_note()` to
+`try/except ValueError` (PR #243). DJI M3M images raise **`IndexError`** there,
+from empty values in `_get_printable_for_field()`, so on upstream the exception
+escapes. `ODMExifRead` still has the original broad `except: pass`
+(`exifread/__init__.py:179-182`) and never sees it.
+
+We had been carrying a patch for this:
+
+```
+sed -i 's/except ValueError as err:/except (ValueError, IndexError) as err:/' \
+    .../exifread/__init__.py
+```
+
+Moving to ODX let us delete it. Anyone running ODM on M3M imagery probably needs
+it, or needs the fork.
+
 ## 5. What we got wrong (so you don't repeat it)
 
 Recorded because these were plausible, well-argued, and cost the most time.
@@ -265,6 +301,29 @@ Recorded because these were plausible, well-argued, and cost the most time.
   the honest value made every metric monotonically **worse** (aligned r 0.490 →
   0.434 → 0.304, visible stitch seams at 3.0). The over-tight prior was holding the
   reconstruction together.
+
+- **Our sharpness metric could not arbitrate blending, because it is monotone in
+  it.** We scored blending arms by high-frequency energy, assuming lower = fewer
+  artifacts. It is lower for *every* increase in blending, on every flight we
+  measured, with no exceptions — so a plain Gaussian blur would have won
+  outright. It measures smoothness and cannot separate *smoother because an
+  artifact was removed* from *smoother because detail was smeared*. Two arms it
+  ranked confidently were rejected on sight by a human.
+
+  The metric that survived is a **ratio**: departure-from-best-view at stepped
+  ground divided by the same on flat ground, from the DSM. Uniform blur cancels
+  in a ratio, so it cannot be gamed the same way. If you build an instrument for
+  compositing quality, check first whether it prefers the null operation.
+
+- **Per-pixel gating lost to a per-flight switch.** We built a relief-adaptive
+  blend weight — full blending on flat ground, collapsing to best-view as local
+  DSM step rises — and it flattened the occlusion dose-response to zero, which
+  looked decisive. But the *delivered* orthomosaic differed from blending
+  everywhere by a median of **0.0000** NDVI, because stepped pixels are a small
+  minority, and a reviewer picked the un-blended arm on the structured sites
+  anyway. A single per-flight decision, keyed on the fraction of ground stepping
+  more than 2 m, reproduced every human verdict we had. Conditioned metrics can
+  be satisfied by a change that is invisible in the product.
 
 ### Measurement notes
 
