@@ -34,9 +34,16 @@ COPY stages/mvstex.py           /code/stages/mvstex.py
 RUN set -eu; \
     fail=0; \
     for sym in prepare_dji_irradiance dji_hmatrix dji_band_warp normalize_view_angle \
-               _view_angle_profile _ramp_profile _ramp_profile_groundfree _frame_signs; do \
+               _view_angle_profile _ramp_profile _ramp_profile_groundfree _frame_signs \
+               _is_m3m; do \
         grep -q "def ${sym}" /code/opendm/multispectral.py || { echo "MISSING SYMBOL: ${sym}"; fail=1; }; \
     done; \
+    grep -q "def is_m3m" /code/opendm/photo.py || { echo "MISSING: photo.is_m3m"; fail=1; }; \
+    # D11/4d — the engine has no camera registry, so the guard IS the registry. A
+    # make-level guard left in a path that applies M3M coefficients would hand them to
+    # an M4E and produce a fully-formed, silently wrong product.
+    grep -q 'camera_make == "DJI"' /code/stages/mvstex.py && { echo "make-level guard left in mvstex"; fail=1; }; \
+    grep -q 'p.camera_make == "DJI" for p in photos' /code/stages/run_opensfm.py && { echo "make-level guard left in run_opensfm"; fail=1; }; \
     for tag in dji_flight_x_speed dji_flight_y_speed dji_calibrated_hmatrix \
                dji_optical_center_x drone-dji:BlackLevel; do \
         grep -q "${tag}" /code/opendm/photo.py || { echo "MISSING XMP TAG: ${tag}"; fail=1; }; \

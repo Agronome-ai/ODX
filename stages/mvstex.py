@@ -2,6 +2,7 @@ import os, shutil
 
 from modules import log
 from modules import io
+from modules import multispectral
 from modules import system
 from modules import context
 from modules import types
@@ -77,7 +78,7 @@ class ODMMvsTexStage(types.ODM_Stage):
         #   global global (per-vertex) leveling only
         #   full   both, as upstream ODM does for RGB
         dji_ms = reconstruction.multi_camera and \
-            any(p.camera_make == "DJI" for p in reconstruction.photos)
+            any(multispectral._is_m3m(p) for p in reconstruction.photos)
         seam_mode = os.environ.get("ODX_SEAM_LEVELING", "off").strip().lower()
         if seam_mode not in ("off", "local", "global", "full"):
             log.WARNING("Unknown ODX_SEAM_LEVELING=%s, using 'off'" % seam_mode)

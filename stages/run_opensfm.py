@@ -209,7 +209,7 @@ class ODMOpenSfMStage(types.ODM_Stage):
         # silently disabling the correction on every M3M flight, since Green is
         # the primary band there.
         if reconstruction.multi_camera and largest_photo is not None and \
-                any(p.camera_make == "DJI" for p in photos):
+                any(multispectral._is_m3m(p) for p in photos):
             multispectral.normalize_view_angle(
                 octx.path("undistorted", "images"),
                 reconstruction.multi_camera,
