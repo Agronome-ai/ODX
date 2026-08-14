@@ -28,12 +28,33 @@ from skimage.filters import rank, gaussian
 _dji_irradiance_map = {}
 DJI_IRRADIANCE_SMOOTH_WINDOW = 7
 
+# Every correction in this module was measured on the DJI Mavic 3 Multispectral and
+# on nothing else. The engine has no camera registry, so THIS GUARD IS THE REGISTRY.
+#
+# Keyed on MODEL, not make. `camera_make == "DJI"` also matches the Mavic 3 Enterprise,
+# whose multispectral payload is a different sensor with different band centres,
+# different vignetting and a different DLS -- applying M3M coefficients to it produces
+# a fully-formed, silently wrong reflectance product rather than an error.
+_M3M_MODELS = {"M3M"}
+
+
+def _is_m3m(photo) -> bool:
+    """True only for the DJI Mavic 3 Multispectral.
+
+    Defensive about both attributes: a photo whose EXIF lacked a model would raise
+    rather than fall through, and falling through here means "treat an unknown camera
+    as an M3M", which is the failure this guard exists to prevent.
+    """
+    make = (getattr(photo, "camera_make", None) or "").strip().upper()
+    model = (getattr(photo, "camera_model", None) or "").strip().upper()
+    return make == "DJI" and model in _M3M_MODELS
+
 def prepare_dji_irradiance(photos):
     global _dji_irradiance_map
     _dji_irradiance_map = {}
     by_band = {}
     for p in photos:
-        if p.camera_make == "DJI" and p.spectral_irradiance is not None \
+        if _is_m3m(p) and p.spectral_irradiance is not None \
                 and p.horizontal_irradiance is None:
             by_band.setdefault(p.band_name, []).append(p)
 
@@ -159,7 +180,7 @@ def dn_to_reflectance(photo, image, use_sun_sensor=True):
     radiance = dn_to_radiance(photo, image)
     irradiance = compute_irradiance(photo, use_sun_sensor=use_sun_sensor)
 
-    if photo.camera_make == "DJI":
+    if _is_m3m(photo):
         # DJI M3M Image Processing Guide: reflectance-proportional values are
         # (DN - black) / (gain * exposure) / irradiance -- there is no pi
         # factor in DJI's model, and the scale is RELATIVE, so clamping at 1.0
@@ -180,7 +201,7 @@ def compute_irradiance(photo, use_sun_sensor=True):
 
     # DJI: prefer the temporally-smoothed sun-sensor irradiance when the
     # flight-wide map has been prepared (see prepare_dji_irradiance)
-    if photo.camera_make == "DJI":
+    if _is_m3m(photo):
         smoothed = _dji_irradiance_map.get(photo.filename)
         if smoothed is not None:
             return smoothed

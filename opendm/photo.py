@@ -748,11 +748,26 @@ class ODM_Photo:
             #(gain = ISO/100)
             return self.iso_speed / 100.0
 
+    def is_m3m(self):
+        """True only for the DJI Mavic 3 Multispectral.
+
+        Lives on the photo rather than in :mod:`multispectral` so photo.py keeps no
+        import of it, and is duplicated there deliberately — the two modules must not
+        depend on each other just to answer "which camera is this".
+
+        Keyed on MODEL: `camera_make == "DJI"` also matches the Mavic 3 Enterprise,
+        whose multispectral payload is a different sensor. Applying M3M constants to it
+        yields a fully-formed, silently wrong product rather than an error.
+        """
+        make = (self.camera_make or "").strip().upper()
+        model = (self.camera_model or "").strip().upper()
+        return make == "DJI" and model == "M3M"
+
     def get_vignetting_center(self):
         # DJI M3M Image Processing Guide (Eq. 8): r is measured from the
         # calibrated optical center ([drone-dji:CalibratedOpticalCenterX/Y]),
         # which on the M3M sits ~44px away from Camera:VignettingCenter
-        if self.camera_make == "DJI" and \
+        if self.is_m3m() and \
                 self.dji_optical_center_x is not None and \
                 self.dji_optical_center_y is not None:
             return [self.dji_optical_center_x, self.dji_optical_center_y]
