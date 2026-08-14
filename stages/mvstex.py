@@ -61,16 +61,31 @@ class ODMMvsTexStage(types.ODM_Stage):
         else:
             add_run(tree.opensfm_reconstruction_nvm)
         
-        # DJI multispectral: mvs-texturing's global+local seam leveling retones
-        # each texture patch independently PER BAND, which perturbs the NIR/Red
-        # ratio patch-by-patch and prints a visible quilt into NDVI and other
-        # band-ratio indices. Force both levelings off for these datasets.
-        # (--texturing-skip-local-seam-leveling was removed from the CLI, but
-        # texrecon still supports the flag.)
-        force_skip_seam_leveling = reconstruction.multi_camera and \
+        # DJI multispectral seam leveling.
+        #
+        # Leveling runs once per band, so its corrections are per-band and can in
+        # principle perturb the NIR/Red ratio. That was the reason both levelings
+        # were forced off here. It was never measured, and the cost is visible:
+        # with leveling off, each flight pass keeps its own radiometric level and
+        # the mosaic shows banding along the flight lines. Pix4D's un-blended
+        # export reproduces our banding exactly, and its blended export does not,
+        # so blending -- not radiometry -- is what closes the gap.
+        #
+        # Mode is selectable so the tradeoff can be measured rather than assumed:
+        #   off    both levelings skipped (previous behaviour)
+        #   local  local (Poisson border) leveling only
+        #   global global (per-vertex) leveling only
+        #   full   both, as upstream ODM does for RGB
+        dji_ms = reconstruction.multi_camera and \
             any(p.camera_make == "DJI" for p in reconstruction.photos)
-        if force_skip_seam_leveling:
-            log.INFO("DJI multispectral: skipping global+local texturing seam leveling to preserve band ratios")
+        seam_mode = os.environ.get("ODX_SEAM_LEVELING", "off").strip().lower()
+        if seam_mode not in ("off", "local", "global", "full"):
+            log.WARNING("Unknown ODX_SEAM_LEVELING=%s, using 'off'" % seam_mode)
+            seam_mode = "off"
+        if not dji_ms:
+            seam_mode = None
+        else:
+            log.INFO("DJI multispectral: seam leveling mode '%s'" % seam_mode)
 
         progress_per_run = 100.0 / len(nonloc.runs)
         progress = 0.0
@@ -97,9 +112,11 @@ class ODMMvsTexStage(types.ODM_Stage):
 
                 if args.texturing_skip_global_seam_leveling:
                     skipGlobalSeamLeveling = "--skip_global_seam_leveling"
-                if force_skip_seam_leveling:
-                    skipGlobalSeamLeveling = "--skip_global_seam_leveling"
-                    skipLocalSeamLeveling = "--skip_local_seam_leveling"
+                if seam_mode is not None:
+                    if seam_mode in ("off", "local"):
+                        skipGlobalSeamLeveling = "--skip_global_seam_leveling"
+                    if seam_mode in ("off", "global"):
+                        skipLocalSeamLeveling = "--skip_local_seam_leveling"
                 if args.texturing_keep_unseen_faces:
                     keepUnseenFaces = "--keep_unseen_faces"
                 if (r['nadir']):
@@ -115,7 +132,9 @@ class ODMMvsTexStage(types.ODM_Stage):
                     # pedestrians/vehicles in urban scenes; on multispectral
                     # reflectance it manipulates values per band. texrecon's own
                     # default is none.
-                    'outlierRemovalType': 'none' if force_skip_seam_leveling else 'gauss_clamping',
+                    # Kept independent of the seam-leveling mode so only one
+                    # variable changes between builds.
+                    'outlierRemovalType': 'none' if dji_ms else 'gauss_clamping',
                     'skipGlobalSeamLeveling': skipGlobalSeamLeveling,
                     'skipLocalSeamLeveling': skipLocalSeamLeveling,
                     'keepUnseenFaces': keepUnseenFaces,
