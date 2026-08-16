@@ -17,11 +17,10 @@
 #              rather than our Artifact Registry mirror so the whole pipeline needs no
 #              cloud auth; see agro_test.sh for the pin and how to refresh it.
 #
-# NOT here yet: building and pushing engine-odx-agronome. That needs Workload Identity
-# Federation for this repository, which is a Terraform change in the app repo (the WIF
-# principal set currently names app-meridian only). Until it exists the image is built
-# and pushed by hand — which is exactly how a merged fix ends up undeployed, so it is
-# worth doing. Tracked in CLAUDE.md §7.
+# DELIBERATELY NOT HERE: building and pushing engine-odx-agronome. That belongs in the
+# app repo, which already holds the GCP credentials and consumes the resulting digest.
+# Keeping it there is what lets this workflow need no cloud auth at all — the reason it
+# finishes in well under a minute. Do not add credentials to this repository.
 
 name: Agronome CI
 
