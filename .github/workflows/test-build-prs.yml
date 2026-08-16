@@ -1,7 +1,24 @@
 name: Build PRs
 
+# AGRONOME FORK EDIT — the only change to this inherited upstream file.
+#
+# Upstream runs these three full SuperBuilds (linux, GPU, Windows) on every PR. In this
+# fork that is hours of runner time per PR for artifacts nobody consumes: we ship
+# engine-odx-agronome as a thin four-file COPY overlay on a pre-built image, never a
+# source build. Our PRs target agronome/dji-m3m-multispectral, so restricting the
+# trigger to master stops them firing on our work while keeping the source-build signal
+# exactly where it still means something — the branch that tracks upstream verbatim.
+#
+# Our own coverage is .github/workflows/agronome-ci.yml (overlay assertion + ODX's
+# unittest suite, which upstream CI never runs at all).
+#
+# Deliberately a 2-line trigger edit rather than deleting the file: a small conflict on
+# an upstream rebase is cheaper to resolve than a whole-file delete, and keeps the
+# workflow available on master.
 on:
   pull_request:
+    branches:
+      - master
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
