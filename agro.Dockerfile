@@ -52,9 +52,16 @@ RUN set -eu; \
         grep -q "${call}" /code/stages/run_opensfm.py || { echo "MISSING CALL SITE: ${call}"; fail=1; }; \
     done; \
     grep -q "ODX_SEAM_LEVELING" /code/stages/mvstex.py || { echo "MISSING: ODX_SEAM_LEVELING"; fail=1; }; \
+    # A frame that undistorts to a size other than the reference photo's cannot be binned
+    # against `bin_idx`; without this guard np.bincount raises and kills the flight. It is
+    # asserted rather than trusted because the crash is ORDER-DEPENDENT — the caller
+    # returns on the first band failing its control gate, so a regression here reproduces
+    # only on the runs where a mismatched band happens to sort first.
+    grep -q "img.shape != bin_idx.shape" /code/opendm/multispectral.py \
+        || { echo "MISSING: _view_angle_profile shape guard"; fail=1; }; \
     grep -q "log.ODM_WARNING" /code/stages/mvstex.py && { echo "log.ODM_WARNING does not exist in ODX"; fail=1; }; \
     python3 -m py_compile /code/opendm/photo.py /code/opendm/multispectral.py \
                           /code/stages/run_opensfm.py /code/stages/mvstex.py \
         || { echo "py_compile FAILED"; fail=1; }; \
     [ "$fail" = "0" ] || { echo "AGRO ODX OVERLAY DID NOT APPLY"; exit 1; }; \
-    echo "agro overlay verified: 8 symbols, 5 XMP tags, 2 call sites, seam-leveling switch"
+    echo "agro overlay verified: 8 symbols, 5 XMP tags, 2 call sites, seam-leveling switch, shape guard"
