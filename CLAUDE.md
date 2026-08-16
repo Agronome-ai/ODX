@@ -127,12 +127,16 @@ e.g.   v3.8.2-0f3864ea-m3m-0cdec216
 ### ⚠️ CI verifies and tests, but does NOT build or push the image
 
 `.github/workflows/agronome-ci.yml` runs the overlay assertion and the ODX test suite
-on every PR. **It does not build or push `engine-odx-agronome`** — that is still a
-manual `docker build -f agro.Dockerfile` + push, because pushing needs Workload
-Identity Federation for *this* repo and the WIF principal set currently names the app
-repo only.
+on every PR. **It does not build or push `engine-odx-agronome`** — and it should not.
 
-So a merged fix can still sit undeployed. §7 is how to check.
+**Image build and push belong in the app repo, not here.** That is where the GCP
+credentials already live (`deploy.yml` authenticates via
+`secrets.GCP_WORKLOAD_IDENTITY_PROVIDER`), where the digest is consumed, and where the
+deploy path already is. **Do not add cloud auth to this repository** — this fork stays
+a source repo whose CI needs no credentials at all, which is what keeps it 38 seconds.
+
+Today that build is still run by hand, so a merged fix can sit undeployed. §7 is how to
+check.
 
 ### 3a. What CI actually runs
 
@@ -392,10 +396,10 @@ that nobody builds is indistinguishable from an unfixed bug in production.
 
 ### Owed
 
-- **Push-on-merge is not automated.** CI verifies and tests (§3a) but does not build or
-  push the engine image. That needs Workload Identity Federation for *this* repository —
-  a Terraform change in the app repo, whose WIF principal set currently names
-  `app-meridian` only.
+- **The engine image is still built and pushed by hand.** CI here verifies and tests
+  (§3a) but deliberately does not build or push — that belongs in the app repo, which
+  already holds the GCP credentials and consumes the digest. Automating it is app-repo
+  work; **nothing is owed in this repository.**
 - **Large flights are untested.** Every measurement behind this fork comes from
   ~300-capture flights. `--matcher-neighbors 0` should scale *better* than a tuned cap,
   since it uses graph rounds rather than N×64 GPS pairs — but that is reasoning, not a
