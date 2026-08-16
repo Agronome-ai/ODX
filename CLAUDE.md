@@ -39,13 +39,17 @@ registry to put them in (`DJI_M3M_FINDINGS.md` §6).
 ### The seven files we touch
 
 ```
-opendm/multispectral.py    +753   all radiometry, band alignment, view-angle work
-opendm/photo.py             +72   five DJI XMP tags + ODM_Photo.is_m3m()
-stages/run_opensfm.py       +29   two call sites + a model-level guard
-stages/mvstex.py            +43   selectable seam levelling
-agro.Dockerfile             +67   the overlay build and its applied-assertion
-DJI_M3M_FINDINGS.md        +358   upstream-facing evidence
-tests/test_multispectral_view_angle.py  +88
+opendm/multispectral.py           all radiometry, band alignment, view-angle work
+opendm/photo.py                   five DJI XMP tags + ODM_Photo.is_m3m()
+stages/run_opensfm.py             two call sites + a model-level guard
+stages/mvstex.py                  selectable seam levelling
+agro.Dockerfile                   the overlay build
+agro_verify.sh                    the applied-assertion (Dockerfile AND CI call it)
+agro_test.sh                      ODX suite + known-failure list
+.github/workflows/agronome-ci.yml our CI
+DJI_M3M_FINDINGS.md               upstream-facing evidence
+tests/test_multispectral_view_angle.py
+CLAUDE.md                         this file
 ```
 
 Anything outside those files is upstream's. If a change wants to live elsewhere, stop
@@ -120,11 +124,46 @@ e.g.   v3.8.2-0f3864ea-m3m-0cdec216
 **This is the fastest way to answer "is my change deployed?"** Read the tag, compare
 `<fork-sha>` against this branch's log.
 
-### ⚠️ Nothing builds this image automatically
+### ⚠️ CI verifies and tests, but does NOT build or push the image
 
-There is **no CI workflow** in either repo that builds or pushes
-`engine-odx-agronome`. It is a manual `docker build -f agro.Dockerfile` + push. That
-is precisely why a merged fix can sit undeployed — see §7.
+`.github/workflows/agronome-ci.yml` runs the overlay assertion and the ODX test suite
+on every PR. **It does not build or push `engine-odx-agronome`** — that is still a
+manual `docker build -f agro.Dockerfile` + push, because pushing needs Workload
+Identity Federation for *this* repo and the WIF principal set currently names the app
+repo only.
+
+So a merged fix can still sit undeployed. §7 is how to check.
+
+### 3a. What CI actually runs
+
+Upstream's own CI (`test-build-prs.yml`) builds Docker images and a Windows installer
+and **never runs the test suite** — ODX ships seven test files that no pipeline
+executes. Ours does:
+
+| job | what | needs |
+|---|---|---|
+| `overlay` | `agro_verify.sh .` — symbols, call sites, XMP tags, model-level gating, shape guard, no `log.ODM_WARNING`, `py_compile` | nothing. grep + python, seconds |
+| `tests` | `agro_test.sh` — ODX's unittest suite inside a **pinned public** `webodm/odx` image | Docker only, no cloud auth |
+
+**`agro_verify.sh` is the single source of the assertion.** `agro.Dockerfile` calls the
+same script at image build, so the check cannot drift between CI and the image.
+
+**`agro_test.sh` judges the suite against an explicit `KNOWN_FAILURES` list**, and fails
+in *both* directions:
+
+- an unexpected failure → regression
+- a known failure that now **passes** → delete it from the list
+
+That second rule is what stops the list becoming somewhere regressions hide. One entry
+today, `test_photo.TestPhoto.test_jpeg_xl`, verified pre-existing and **not ours** by
+swapping upstream's `photo.py`/`multispectral.py` into the same image and re-running.
+
+Run either locally, exactly as CI does:
+
+```bash
+./agro_verify.sh .          # no Docker needed
+./agro_test.sh --docker     # pulls the pinned image and runs the suite inside it
+```
 
 ### Who consumes it
 
@@ -319,22 +358,36 @@ refactor away from being silently absent.
 
 ---
 
-## 7. State as of 2026-08-16
+## 7. Is my change deployed? — derive it, do not trust this file
 
-**⚠️ The branch is ahead of the deployed image.**
+**Nothing here states a current digest on purpose.** A hardcoded snapshot in an
+auto-loaded file goes stale silently and then actively misinforms, which is the same
+class of failure as everything else in §6. Derive it:
 
-| | |
-|---|---|
-| branch tip | `3bc90641` (merge of `cbb203f4`, the `_view_angle_profile` shape guard) |
-| deployed image | `sha256:04d780fa…`, tag `v3.8.2-0f3864ea-m3m-0cdec216`, built 2026-08-14 |
-| **not in any image** | `cbb203f4` — the fix for the crash that killed job `9ca82421` |
+```bash
+# what the fork carries
+git log --oneline origin/agronome/dji-m3m-multispectral -3
 
-Nothing builds the image automatically, so this gap does not close by itself. To ship
-it: build `agro.Dockerfile`, push with a tag encoding both parents, then bump the
-digest in `app-meridian/apps/worker/Dockerfile`.
+# what is actually deployed — the tag encodes BOTH parents, v<odx>-<upstream>-m3m-<fork>
+grep -n "engine-odx-agronome@sha256" <app-repo>/apps/worker/Dockerfile
+CLOUDSDK_ACTIVE_CONFIG_NAME=default gcloud artifacts docker images list \
+  northamerica-northeast2-docker.pkg.dev/agronome-shared-services/agronome/engine-odx-agronome \
+  --include-tags --format="value(version,updateTime,tags)" --sort-by="~updateTime" --limit=3
+```
+
+Read the `m3m-<sha>` suffix and `git log` from it. Anything listed is not in the image.
+
+**This gap is real and recurring, because no CI builds the engine image** (see §3). To
+close it: build `agro.Dockerfile`, push with a two-parent tag, bump the digest in the
+app repo's `apps/worker/Dockerfile`. Worth doing the moment a fix merges — a merged fix
+that nobody builds is indistinguishable from an unfixed bug in production.
 
 ### Owed
 
+- **Push-on-merge is not automated.** CI verifies and tests (§3a) but does not build or
+  push the engine image. That needs Workload Identity Federation for *this* repository —
+  a Terraform change in the app repo, whose WIF principal set currently names
+  `app-meridian` only.
 - **Large flights are untested.** Every measurement behind this fork comes from
   ~300-capture flights. `--matcher-neighbors 0` should scale *better* than a tuned cap,
   since it uses graph rounds rather than N×64 GPS pairs — but that is reasoning, not a
@@ -354,16 +407,21 @@ digest in `app-meridian/apps/worker/Dockerfile`.
 
 ```bash
 git checkout -b <type>/<slug> origin/agronome/dji-m3m-multispectral   # never master
-./test.sh multispectral_view_angle       # ODX uses unittest discovery, NOT pytest
-docker build -f agro.Dockerfile -t <tag> .                            # assertion runs here
+./agro_verify.sh .                       # the overlay assertion — seconds, no Docker
+./agro_test.sh --docker                  # the full ODX suite vs the known-failure list
+./test.sh multispectral_view_angle       # one file; unittest discovery, NOT pytest
+docker build -f agro.Dockerfile -t <tag> .   # assertion runs again inside the image
 ```
 
 `test.sh` expands its argument to `tests/test_<arg>.py` and runs
 `python3 -m unittest discover`. Match that style — a `pytest`-only test will not be
 discovered by the repo's own runner and will look like it passed by never running.
 
-The build assertion is the cheapest real test you have — it runs on every image build
-and fails loudly. Run a build before claiming a change ships.
+`agro_verify.sh` is the cheapest real check you have — no Docker, no auth, seconds, and
+it runs identically in CI and at image build. Run it before claiming anything ships.
+
+**When you add a correction, add it to `agro_verify.sh`.** An unasserted correction is
+one refactor away from being silently absent — which is the exact failure in §5.
 
 The tests in `tests/test_multispectral_view_angle.py` cover the shape guard's four
 cases (matching frames contribute, mismatched frame is skipped rather than raising, all

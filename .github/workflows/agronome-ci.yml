@@ -1,0 +1,69 @@
+# Agronome fork CI.
+#
+# Upstream ODX ships seven test files and its own CI (`test-build-prs.yml`) never runs
+# any of them — it builds Docker images and a Windows installer and nothing else. So
+# this fork's changes to opendm/ and stages/ were, until now, covered by no automated
+# test at all. This workflow is that coverage.
+#
+# Two jobs, deliberately independent:
+#
+#   overlay  — asserts this tree really carries the M3M corrections (symbols AND call
+#              sites). Pure grep + py_compile against the checkout, so it needs no
+#              Docker and no registry credentials and finishes in seconds. This is the
+#              check that would have caught corrections shipping as constants-only.
+#
+#   tests    — runs ODX's own unittest suite inside a pinned upstream image, judged
+#              against an explicit known-failure list. Uses the PUBLIC upstream image
+#              rather than our Artifact Registry mirror so the whole pipeline needs no
+#              cloud auth; see agro_test.sh for the pin and how to refresh it.
+#
+# NOT here yet: building and pushing engine-odx-agronome. That needs Workload Identity
+# Federation for this repository, which is a Terraform change in the app repo (the WIF
+# principal set currently names app-meridian only). Until it exists the image is built
+# and pushed by hand — which is exactly how a merged fix ends up undeployed, so it is
+# worth doing. Tracked in CLAUDE.md §7.
+
+name: Agronome CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - agronome/dji-m3m-multispectral
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  overlay:
+    name: Overlay assertion
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert the M3M overlay is present and wired up
+        run: bash ./agro_verify.sh .
+
+  tests:
+    name: ODX test suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The suite writes into tests/assets/output, so the mount must be writable —
+      # a read-only mount turns every setUp into an OSError and reads as 13 failures
+      # that have nothing to do with the code under test.
+      - name: Run ODX's unittest suite against the known-failure set
+        run: |
+          docker run --rm \
+            -v "$PWD/tests:/code/tests" \
+            -v "$PWD/opendm:/code/opendm" \
+            -v "$PWD/stages:/code/stages" \
+            -v "$PWD/agro_test.sh:/code/agro_test.sh:ro" \
+            --entrypoint bash \
+            "$(grep -oE 'webodm/odx@sha256:[a-f0-9]+' agro_test.sh | head -1)" \
+            -c 'cd /code && ./agro_test.sh'
