@@ -323,6 +323,25 @@ def _view_angle_profile(paths, bin_idx, nbin, decim):
                               resampling=Resampling.average).astype(np.float64)
         except Exception:
             continue
+        # `bin_idx` is built ONCE from the largest photo's dimensions, but every frame is
+        # read at its own `out_shape`. A frame that undistorts to a different size cannot
+        # be binned against this grid: np.bincount raises "The weights and list don't have
+        # the same length", which the read guard above does NOT catch, killing the run.
+        #
+        # Observed 2026-08-16 on TuplinSkips (job 9ca82421). It had been latent rather than
+        # absent — the caller returns on the first band that fails its control gate, so a
+        # mismatched band is only reached when it happens to sort ahead of a failing one,
+        # and band order varies between runs.
+        #
+        # Skipping is the right response, not raising: the profile is an average over many
+        # frames, `n` tracks how many contributed, and the caller already treats a missing
+        # or unusable profile as "cannot correct" and declines. A dropped frame costs a
+        # little precision; an exception costs the whole flight.
+        #
+        # `_ramp_profile` below needs no such guard — it derives its bins from each frame's
+        # own width, so its indices cannot disagree with its data.
+        if img.shape != bin_idx.shape:
+            continue
         ok = np.isfinite(img) & (img > 1e-7)
         if ok.mean() < 0.5:
             continue
