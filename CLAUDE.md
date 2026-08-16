@@ -165,6 +165,14 @@ Run either locally, exactly as CI does:
 ./agro_test.sh --docker     # pulls the pinned image and runs the suite inside it
 ```
 
+**We also made one edit to an inherited upstream workflow.** `test-build-prs.yml` ran
+three full SuperBuilds (linux, GPU, Windows) on every PR — hours of runner time for
+artifacts nobody consumes, since we ship a thin COPY overlay and never build from
+source. Its trigger is now restricted to `master`, the branch that tracks upstream
+verbatim and where a source-build regression still means something. **Expect a small
+conflict there on an upstream rebase** — a 2-line trigger edit was chosen over deleting
+the file precisely because it is cheap to re-apply.
+
 ### Who consumes it
 
 `app-meridian/apps/worker/Dockerfile` pins `engine-odx-agronome` **by digest** as its
