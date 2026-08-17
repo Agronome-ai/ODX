@@ -316,6 +316,8 @@ def _view_angle_profile(paths, bin_idx, nbin, decim):
 
     acc = np.zeros(nbin)
     n = 0
+    mismatch = 0
+    first_mismatch = None
     for p in paths:
         try:
             with rasterio.open(p) as ds:
@@ -341,6 +343,15 @@ def _view_angle_profile(paths, bin_idx, nbin, decim):
         # `_ramp_profile` below needs no such guard — it derives its bins from each frame's
         # own width, so its indices cannot disagree with its data.
         if img.shape != bin_idx.shape:
+            # Report the two shapes rather than only the count. The grid is built from one
+            # photo's dimensions and the frames are read at their own, so "how many were
+            # skipped" cannot distinguish a grid built from the wrong reference (every
+            # frame disagrees, identically) from genuinely odd frames (a few disagree, in
+            # different ways). The shapes themselves say which, and a silent skip reads as
+            # a correction that ran.
+            if mismatch == 0:
+                first_mismatch = img.shape
+            mismatch += 1
             continue
         ok = np.isfinite(img) & (img > 1e-7)
         if ok.mean() < 0.5:
@@ -354,6 +365,12 @@ def _view_angle_profile(paths, bin_idx, nbin, decim):
                         minlength=nbin)
         acc += s / np.maximum(c, 1)
         n += 1
+    if mismatch:
+        log.WARNING("View-angle profile: %s of %s frames did not match the bin grid "
+                    "(grid %sx%s, first mismatching frame %sx%s) -- they contributed "
+                    "nothing to the profile"
+                    % (mismatch, len(paths), bin_idx.shape[0], bin_idx.shape[1],
+                       first_mismatch[0], first_mismatch[1]))
     return (acc / n if n else None), n
 
 
@@ -653,6 +670,11 @@ def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8,
                   ((yy * decim) - (height - 1) / 2.0) / scale)
     rmax = float(rn.max())
     bin_idx = np.clip((rn / rmax * VIEW_ANGLE_BINS).astype(int), 0, VIEW_ANGLE_BINS - 1)
+    # State the reference the grid was built from. Every frame is binned against this one
+    # grid, so if the reference is the wrong photo the correction cannot work — and the
+    # only outward sign is a control gate that fails for reasons that look like the scene.
+    log.INFO("View-angle normalization: bin grid %sx%s from a %sx%s reference frame "
+             "(decimation %s)" % (bin_idx.shape[0], bin_idx.shape[1], width, height, decim))
 
     signs = _frame_signs(multi_camera)
     ramp_ok = True
