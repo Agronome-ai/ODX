@@ -777,7 +777,52 @@ def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8,
                 log.WARNING("View-angle normalization failed for %s: %s" % (fp, str(e)))
 
 
+def all_bands_reconstructable(multi_camera) -> bool:
+    """True when every band of this capture set should enter the reconstruction.
+
+    Upstream reconstructs from ONE primary band and copies that band's solved pose onto
+    the other three (`OSFMContext.add_shots_to_reconstruction`). Three quarters of the
+    imagery therefore contributes nothing to the geometry — the bands are treated as a
+    zero-baseline rig by assignment rather than by evidence.
+
+    Measured on three flights (60 mid-flight captures each, production OpenSfM config,
+    single variable):
+
+        flight        1 band -> 4 bands (avg track length)   two-view tracks
+        TuplinSkips     2.66 -> 4.56  (+71%)                 64.8% -> 38.1%
+        Zuppan          3.91 -> 4.80  (+23%)                 38.0% -> 38.9%
+        Naufrage        4.45 -> 5.52  (+24%)                 33.3% -> 33.8%
+
+    Where the primary band is weak the extra bands REPAIR the geometry; where it is
+    already healthy they DEEPEN it. TuplinSkips is the flight that shipped a
+    multispectral orthomosaic with 41% valid pixels and an elevation model spanning
+    889 m on ground that is flat to 10 cm.
+
+    Gated on the M3M because that is the only camera these measurements cover. The gate
+    is deliberately per-MODEL, matching the convention this fork already follows: the
+    engine has no camera registry, so the guard is the registry (DD-171 D11/4d).
+    """
+    for band in multi_camera:
+        for photo in band.get('photos', []):
+            if not _is_m3m(photo):
+                return False
+    return len(multi_camera) > 1
+
+
 def get_photos_by_band(multi_camera, user_band_name):
+    """Photos that the reconstruction should use.
+
+    For an M3M this is EVERY band; for anything else it stays the single primary band,
+    exactly as upstream. Returning more photos here is the whole intervention — the
+    caller (`OSFMContext.setup`) writes whatever comes back into `image_list.txt`, so no
+    change is needed outside this fork's own files.
+    """
+    if all_bands_reconstructable(multi_camera):
+        photos = [p for band in multi_camera for p in band.get('photos', [])]
+        log.INFO("Reconstruction will use all %s images across %s bands"
+                 % (len(photos), len(multi_camera)))
+        return photos
+
     band_name = get_primary_band_name(multi_camera, user_band_name)
 
     for band in multi_camera:

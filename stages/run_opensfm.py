@@ -178,10 +178,23 @@ class ODMOpenSfMStage(types.ODM_Stage):
                     log.WARNING("Skipping band alignment")
                     alignment_info = {}
                     
-                log.INFO("Adding shots to reconstruction")
-                
-                octx.backup_reconstruction()
-                octx.add_shots_to_reconstruction(p2s)
+                # `add_shots_to_reconstruction` exists to give the secondary bands a pose
+                # they never solved for, by COPYING the primary band's. When every band
+                # was reconstructed in its own right that copy is not a fill-in, it is a
+                # regression: it would discard four independently solved poses and
+                # replace them with one band's, which is precisely the information the
+                # four-band reconstruction was run to obtain.
+                #
+                # Band alignment above is deliberately left in place. The bands should
+                # now land correctly from their own geometry, but that is a claim to
+                # verify on a real flight before removing a correction that demonstrably
+                # fixed registration (DD-171).
+                if multispectral.all_bands_reconstructable(reconstruction.multi_camera):
+                    log.INFO("All bands reconstructed — keeping their solved poses")
+                else:
+                    log.INFO("Adding shots to reconstruction")
+                    octx.backup_reconstruction()
+                    octx.add_shots_to_reconstruction(p2s)
                 octx.touch(added_shots_file)
 
             undistort_pipeline.append(align_to_primary_band)
@@ -237,18 +250,30 @@ class ODMOpenSfMStage(types.ODM_Stage):
                     if p2s is None:
                         s2p, p2s = multispectral.compute_band_maps(reconstruction.multi_camera, primary_band_name)
                     
+                    # `img_map` must cover EVERY image the NVM contains, because
+                    # replace_nvm_images refuses to write a partial mapping.
+                    #
+                    # Upstream keys this on primary filenames alone, which is correct when
+                    # only the primary band was reconstructed. With four-band
+                    # reconstruction the NVM holds all bands, so each capture's OTHER
+                    # images need an entry too — every image of a capture maps to that
+                    # capture's sibling in the band being written.
+                    #
+                    # This degrades exactly to upstream behaviour when the NVM contains
+                    # only primary-band shots: the extra keys are simply never looked up.
                     for fname in p2s:
-                        
-                        # Primary band maps to itself
                         if band['name'] == primary_band_name:
-                            img_map[add_image_format_extension(fname, 'tif')] = add_image_format_extension(fname, 'tif')
+                            band_filename = fname
                         else:
                             band_filename = next((p.filename for p in p2s[fname] if p.band_name == band['name']), None)
 
-                            if band_filename is not None:
-                                img_map[add_image_format_extension(fname, 'tif')] = add_image_format_extension(band_filename, 'tif')
-                            else:
-                                log.WARNING("Cannot find %s band equivalent for %s" % (band, fname))
+                        if band_filename is None:
+                            log.WARNING("Cannot find %s band equivalent for %s" % (band, fname))
+                            continue
+
+                        target = add_image_format_extension(band_filename, 'tif')
+                        for src in [fname] + [p.filename for p in p2s[fname]]:
+                            img_map[add_image_format_extension(src, 'tif')] = target
 
                     nvm.replace_nvm_images(tree.opensfm_reconstruction_nvm, img_map, nvm_file)
                 else:
