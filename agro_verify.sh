@@ -83,6 +83,17 @@ grep -q "ODX_SEAM_LEVELING" "$MVSTEX" && note "ODX_SEAM_LEVELING switch" "ok" \
 grep -q "img.shape != bin_idx.shape" "$MS" && note "view-angle shape guard" "ok" \
     || bad "view-angle shape guard"
 
+# --- four-band reconstruction -------------------------------------------------------
+# The multispectral pass must reconstruct from ALL bands, not one primary band. Both
+# halves are asserted because either alone is worse than neither: returning every band
+# without suppressing the pose copy means four solved poses get overwritten by the
+# primary's, and suppressing the copy without returning every band leaves three bands
+# with no pose at all.
+grep -q "def all_bands_reconstructable" "$MS" && note "four-band selector" "ok" \
+    || bad "four-band selector"
+grep -q "all_bands_reconstructable(reconstruction.multi_camera)" "$OSFM_STAGE" \
+    && note "four-band pose-copy guard" "ok" || bad "four-band pose-copy guard"
+
 # --- ODX log API ------------------------------------------------------------------
 # log.ODM_WARNING does not exist in ODX. It is muscle memory from other codebases and
 # AttributeErrors at runtime, on the error path — the one place you find out last.
