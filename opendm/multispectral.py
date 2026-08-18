@@ -309,6 +309,78 @@ RAMP_MIN_CORR = 0.7          # two disjoint halves of the flight must agree
 RAMP_MAX_AMPLITUDE = 0.9
 RAMP_MIN_SPEED = 1.5         # m/s below which a frame has no meaningful heading
 
+# --- provenance (DD-196 Phase 1) ----------------------------------------------
+#
+# Everything above decides, per flight, whether to apply a correction estimated from
+# the flight's own imagery. Until this file wrote it down, that decision existed only
+# in Cloud Logging: three M3M flights were re-driven on 2026-08-14/15, ONE was
+# corrected, and nothing outside logs that age out recorded which.
+#
+# The refusals were right. Scott Smith's two disjoint halves measured OPPOSITE radial
+# profiles (control corr -0.88); applying either would have flattened real crop
+# variation and produced an image that looks entirely normal. That is the whole
+# problem with this gate -- a wrong application is invisible in the output -- and it
+# is why the record has to exist before anyone argues about the thresholds.
+#
+# Written next to the project's other Agronome-owned sidecar (`agronome_fragmentation.json`)
+# at the project root, so the wrapper's checkpoint mirror carries it across a resumed
+# run for free: `_MIRROR_EXCLUDE_DIRS` excludes only images, ppk_files and rgb_project.
+#
+# ABSENT means "never a candidate" -- a non-M3M or single-camera flight never reaches
+# this code. That is deliberately distinct from a present file saying applied=false,
+# which means the gate ran and refused. Collapsing the two is how the skip stayed
+# invisible in the first place.
+RADIOMETRIC_SUMMARY_FILENAME = "agronome_radiometric.json"
+
+
+def _finite_or_none(value):
+    """A JSON-safe float, or None.
+
+    `json.dump` writes bare `NaN` / `Infinity` for these, which is invalid JSON that
+    Python itself reads back happily and every strict parser downstream rejects. A
+    control correlation IS NaN whenever a profile is flat, so this is the normal case
+    on a degenerate flight rather than an exotic one -- and a sidecar that fails to
+    parse would take the whole record down with it, including the verdict that matters.
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _radiometric_project_dir(undistorted_dir, opensfm_dir):
+    """The directory the summary sidecar belongs in.
+
+    Prefer `opensfm_dir`'s parent, since the caller always passes it. The fallback
+    walks up from `<opensfm>/undistorted/images` so the signature stays honest for a
+    caller that omits it rather than writing the file somewhere arbitrary.
+    """
+    if opensfm_dir:
+        return os.path.dirname(os.path.normpath(opensfm_dir))
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.normpath(undistorted_dir))))
+
+
+def write_radiometric_summary(project_dir, summary):
+    """Persist the radiometric verdict. Never raises.
+
+    A diagnostic that can fail the flight it describes is worse than no diagnostic, so
+    every error here is a warning. It is still SAID OUT LOUD: silently skipping the
+    write would reproduce the exact failure this whole record exists to end.
+    """
+    import json
+
+    path = os.path.join(project_dir, RADIOMETRIC_SUMMARY_FILENAME)
+    try:
+        with open(path, "w") as handle:
+            json.dump(summary, handle, indent=2, sort_keys=True)
+    except (OSError, TypeError, ValueError) as e:
+        log.WARNING("Radiometric summary not written to %s: %s" % (path, str(e)))
+        return
+    log.INFO("Radiometric summary: applied=%s skip_reason=%s ramp_applied=%s axis=%s"
+             % (summary.get("applied"), summary.get("skip_reason"),
+                summary.get("ramp_applied"), summary.get("flight_axis_deg")))
+
 
 def _view_angle_profile(paths, bin_idx, nbin, decim):
     from rasterio.enums import Resampling
@@ -388,7 +460,14 @@ def _frame_signs(multi_camera):
     turnaround and have no meaningful heading, so they inherit the sign of the
     nearest frame in capture order rather than guessing.
 
-    Returns {} when the tags are absent, which disables the ramp entirely.
+    Returns ``(signs, axis_deg)``. ``signs`` is {} when the tags are absent, which
+    disables the ramp entirely, and ``axis_deg`` is then None.
+
+    The axis is RETURNED rather than only logged (DD-196 Phase 1) because it is the
+    one number that explains a ramp verdict after the fact: the correction only has
+    something to find when the across-swath axis lies near the solar principal
+    plane, so a skip at 165 deg and a skip at 76 deg are different events. Cloud
+    Logging ages out; the provenance record does not.
     """
     stamp = re.compile(r"(\d{14})")
     seen = {}
@@ -408,7 +487,7 @@ def _frame_signs(multi_camera):
 
     known = [b for _, b in seen.values() if b is not None]
     if len(known) < VIEW_ANGLE_MIN_FRAMES:
-        return {}
+        return {}, None
 
     # dominant flight axis, from the doubled-angle mean so opposing passes agree
     rad = np.radians(np.array(known))
@@ -433,7 +512,7 @@ def _frame_signs(multi_camera):
     n_pos = sum(1 for v in signs.values() if v > 0)
     log.INFO("View-angle ramp: flight axis %.0f deg, %s frames one way, %s the other"
              % (axis, n_pos, len(signs) - n_pos))
-    return signs
+    return signs, float(axis)
 
 
 def _ramp_profile_groundfree(opensfm_dir, paths, signs, nbin, max_tracks=40000, win=2):
@@ -660,7 +739,47 @@ def _band_undistorted_paths(undistorted_dir, band):
 
 def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8,
                          opensfm_dir=None):
-    """Flatten the view-zenith reflectance gradient inside every frame."""
+    """Flatten the view-zenith reflectance gradient inside every frame.
+
+    Returns the provenance summary it also writes to disk (DD-196 Phase 1). The write
+    happens in a `finally`, not at each `return`: the body has five exit points and
+    the ones worth recording are precisely the ones easiest to forget, since they are
+    the early returns that skip the correction. Making the write structural rather
+    than remembered is the difference between a record that exists and one that exists
+    on the happy path.
+    """
+    summary = {
+        # Seeded as a refusal with an unknown reason, so an exception escaping the
+        # body still lands a truthful "not applied" rather than nothing at all.
+        "applied": False,
+        "skip_reason": "unknown",
+        "flight_axis_deg": None,
+        "ramp_applied": False,
+        "ramp_skip_reason": None,
+        "bands": {},
+        # Stored, not assumed -- the same reasoning as `blend_threshold_pct`. When a
+        # threshold later moves, every historical flight stays explicable without
+        # archaeology into which engine build it ran on.
+        "thresholds": {
+            "min_frames": VIEW_ANGLE_MIN_FRAMES,
+            "min_corr": VIEW_ANGLE_MIN_CORR,
+            "max_disagree": VIEW_ANGLE_MAX_DISAGREE,
+            "ramp_min_corr": RAMP_MIN_CORR,
+            "ramp_max_amplitude": RAMP_MAX_AMPLITUDE,
+        },
+    }
+    try:
+        _normalize_view_angle(undistorted_dir, multi_camera, width, height, decim,
+                              opensfm_dir, summary)
+    finally:
+        write_radiometric_summary(
+            _radiometric_project_dir(undistorted_dir, opensfm_dir), summary)
+    return summary
+
+
+def _normalize_view_angle(undistorted_dir, multi_camera, width, height, decim,
+                          opensfm_dir, summary):
+    """The measurement and application itself; records its verdict into `summary`."""
     import rasterio
 
     scale = float(max(width, height))
@@ -676,18 +795,24 @@ def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8,
     log.INFO("View-angle normalization: bin grid %sx%s from a %sx%s reference frame "
              "(decimation %s)" % (bin_idx.shape[0], bin_idx.shape[1], width, height, decim))
 
-    signs = _frame_signs(multi_camera)
+    signs, flight_axis = _frame_signs(multi_camera)
+    summary["flight_axis_deg"] = flight_axis
     ramp_ok = True
+    if not signs:
+        summary["ramp_skip_reason"] = "no_headings"
 
     # --- measure and gate every band BEFORE touching any of them --------------
     plans = []
     for band in multi_camera:
         name = band['name']
         paths = _band_undistorted_paths(undistorted_dir, band)
+        band_record = {"frames": len(paths)}
+        summary["bands"][name] = band_record
         if len(paths) < VIEW_ANGLE_MIN_FRAMES:
             log.WARNING("View-angle normalization: %s has only %s undistorted "
                         "frames -- skipping correction for ALL bands"
                         % (name, len(paths)))
+            summary["skip_reason"] = "too_few_frames:%s" % name
             return
 
         half = len(paths) // 2
@@ -696,21 +821,27 @@ def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8,
         if p1 is None or p2 is None:
             log.WARNING("View-angle normalization: %s produced no usable profile "
                         "-- skipping correction for ALL bands" % name)
+            summary["skip_reason"] = "no_profile:%s" % name
             return
         p1 = p1 / p1[:3].mean()
         p2 = p2 / p2[:3].mean()
         corr = float(np.corrcoef(p1, p2)[0, 1])
         disagree = float(abs(p1[-3:].mean() - p2[-3:].mean()))
+        band_record["control_corr"] = _finite_or_none(corr)
+        band_record["edge_disagreement"] = _finite_or_none(disagree)
+        band_record["control_frames"] = [int(n1), int(n2)]
         if corr < VIEW_ANGLE_MIN_CORR or disagree > VIEW_ANGLE_MAX_DISAGREE:
             log.WARNING("View-angle normalization: %s failed its control "
                         "(corr %.2f, edge disagreement %.2f) -- skipping "
                         "correction for ALL bands to keep band ratios intact"
                         % (name, corr, disagree))
+            summary["skip_reason"] = "control_failed:%s" % name
             return
 
         prof = (p1 + p2) / 2.0
         prof = np.convolve(np.pad(prof, 2, mode="edge"), np.ones(5) / 5.0, mode="valid")
         prof = np.clip(prof / prof[:3].mean(), *VIEW_ANGLE_CLAMP)
+        band_record["edge_centre"] = _finite_or_none(float(prof[-3:].mean()))
         log.INFO("View-angle normalization: %s edge/centre %.3f (control corr "
                  "%.2f, %s+%s frames)" % (name, prof[-3:].mean(), corr, n1, n2))
 
@@ -728,6 +859,7 @@ def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8,
                 log.INFO("View-angle ramp: no tracks available, skipping the ramp "
                          "(the single-frame estimate would over-correct)")
                 ramp_ok = False
+                summary["ramp_skip_reason"] = "no_tracks"
             else:
                 res, npairs = _ramp_profile_groundfree(opensfm_dir, paths, signs,
                                                        RAMP_BINS)
@@ -736,9 +868,13 @@ def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8,
                                 "skipping the ramp for ALL bands (radial still applies)"
                                 % name)
                     ramp_ok = False
+                    summary["ramp_skip_reason"] = "no_profile:%s" % name
                 else:
                     prof_r, rcorr = res
                     amp = float(np.nanmax(prof_r) - np.nanmin(prof_r))
+                    band_record["ramp_corr"] = _finite_or_none(rcorr)
+                    band_record["ramp_amplitude"] = _finite_or_none(amp)
+                    band_record["ramp_pairs"] = int(npairs)
                     if rcorr < RAMP_MIN_CORR or not np.isfinite(amp) \
                             or amp > RAMP_MAX_AMPLITUDE:
                         log.WARNING("View-angle ramp: %s failed its control (corr "
@@ -746,16 +882,22 @@ def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8,
                                     "ALL bands to keep band ratios intact (radial "
                                     "still applies)" % (name, rcorr, amp))
                         ramp_ok = False
+                        summary["ramp_skip_reason"] = "control_failed:%s" % name
                     else:
                         ramp = np.convolve(np.pad(prof_r, 2, mode="edge"),
                                            np.ones(5) / 5.0, mode="valid")
                         ramp = ramp - ramp.mean()
+                        band_record["ramp_low"] = _finite_or_none(float(ramp[0]))
+                        band_record["ramp_high"] = _finite_or_none(float(ramp[-1]))
                         log.INFO("View-angle ramp: %s across-swath %+.3f .. %+.3f "
                                  "(ground-free, control corr %.2f, %s pairs)"
                                  % (name, ramp[0], ramp[-1], rcorr, npairs))
         plans.append((name, paths, prof, ramp))
 
     if not plans:
+        # An empty band list, not a failed control -- distinct because the fix is
+        # different: this one means the caller handed us nothing to measure.
+        summary["skip_reason"] = "no_bands"
         return
     if not ramp_ok:
         plans = [(n, p, pr, None) for n, p, pr, _ in plans]
@@ -769,6 +911,14 @@ def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8,
     ramp_pos = np.clip((xn_full + 1.0) / 2.0 * RAMP_BINS - 0.5, 0, RAMP_BINS - 1)
 
     log.INFO("View-angle normalization: all %s bands passed, applying" % len(plans))
+    # Marked applied HERE, before the per-frame loop, because that loop's failures are
+    # per-file and non-fatal: it warns and moves on. The flight-level verdict is "the
+    # gate passed and the correction was applied", and the per-frame casualties belong
+    # in `frames_failed` rather than in a boolean that would then mean two things.
+    summary["applied"] = True
+    summary["skip_reason"] = None
+    summary["ramp_applied"] = ramp_ok and any(r is not None for _, _, _, r in plans)
+    frames_failed = 0
     for name, paths, prof, ramp in plans:
         field = np.interp(pos.ravel(), np.arange(VIEW_ANGLE_BINS),
                           prof).reshape(height, width).astype(np.float32)
@@ -796,7 +946,9 @@ def normalize_view_angle(undistorted_dir, multi_camera, width, height, decim=8,
                     out.write(a, 1)
                     out.update_tags(ODM_VIEW_ANGLE_NORM="1")
             except Exception as e:
+                frames_failed += 1
                 log.WARNING("View-angle normalization failed for %s: %s" % (fp, str(e)))
+    summary["frames_failed"] = frames_failed
 
 
 def all_bands_reconstructable(multi_camera) -> bool:
