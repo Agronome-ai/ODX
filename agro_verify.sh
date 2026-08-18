@@ -94,6 +94,19 @@ grep -q "def all_bands_reconstructable" "$MS" && note "four-band selector" "ok" 
 grep -q "all_bands_reconstructable(reconstruction.multi_camera)" "$OSFM_STAGE" \
     && note "four-band pose-copy guard" "ok" || bad "four-band pose-copy guard"
 
+# --- per-band camera models (DD-200) ------------------------------------------------
+# Both halves are asserted because either alone is worse than neither: splitting the bands
+# without `brown` gives four models that still cannot represent a principal point, and
+# switching to `brown` without splitting gives one richer model shared by four lenses.
+#
+# Asserted rather than trusted because the failure is SILENT and slow: a collapsed camera
+# id still reconstructs, still produces a map, and is only visible as ~0.3-0.8 m of drift
+# against a PPK track -- no error, no warning, nothing a reviewer would notice.
+grep -q 'projection = "brown"' "$PHOTO" && note "per-band brown projection" "ok" \
+    || bad "per-band brown projection"
+grep -q 'band = self.band_name.strip()' "$PHOTO" && note "per-band camera id" "ok" \
+    || bad "per-band camera id"
+
 # --- ODX log API ------------------------------------------------------------------
 # log.ODM_WARNING does not exist in ODX. It is muscle memory from other codebases and
 # AttributeErrors at runtime, on the error path — the one place you find out last.

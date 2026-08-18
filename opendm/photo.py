@@ -889,6 +889,32 @@ class ODM_Photo:
         return self.band_name.upper() in ["RGB", "REDGREENBLUE"]
 
     def camera_id(self):
+        # DD-200: an M3M is FOUR physically different lenses in one head, not one camera with
+        # four filters. Every band reports byte-identical EXIF -- same make, model, 2592x1944,
+        # same FocalLength -- so without the band in this key all four hash to ONE camera id and
+        # the reconstruction fits a single lens model to four different lenses. It stays
+        # internally consistent by bending camera POSES to absorb the mismatch, which is why the
+        # symptom was never a wrong-looking map, just a map in slightly the wrong place: measured
+        # 0.30-0.78 m of disagreement with a PPK track, cut 18-79% by splitting them.
+        #
+        # `brown` rather than `perspective` because perspective's parameters are (focal, k1, k2)
+        # -- it has no principal-point field at all, so the offset that actually differs between
+        # bands (up to 31 px) cannot be represented even in principle. Splitting into four
+        # perspective models would be four copies of the same limitation.
+        #
+        # NOT seeded from DJI's factory calibration: tested seven ways across three flights and
+        # it never beat a neutral start on both metrics (DD-200 D3). The values are correct for
+        # the job DJI documents -- undistorting pixels -- but the solver has 240 in-situ images
+        # of the lens as it is today and does better from zero.
+        # Gated to the MS bands only. `band_name` defaults to "RGB", and the M3M's colour
+        # frame is a fifth, genuinely different lens -- but the RGB pass is a separate project
+        # that nothing here has measured, so it keeps upstream behaviour untouched. Widening to
+        # it is a decision, not a side effect.
+        projection = self.camera_projection
+        band = ""
+        if self.is_m3m() and self.band_name and self.band_name.strip().upper() != "RGB":
+            projection = "brown"
+            band = self.band_name.strip()
         return " ".join(
                 [
                     "v2",
@@ -896,10 +922,11 @@ class ODM_Photo:
                     self.camera_model.strip(),
                     str(int(self.width)),
                     str(int(self.height)),
-                    self.camera_projection,
+                    projection,
                     str(float(self.focal_ratio))[:6],
+                    band,
                 ]
-            ).lower()
+            ).strip().lower()
 
     def to_opensfm_exif(self, rolling_shutter = False, rolling_shutter_readout = 0, gps_accuracy = 10.0):
         capture_time = 0.0
