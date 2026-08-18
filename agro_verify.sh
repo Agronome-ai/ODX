@@ -37,7 +37,7 @@ done
 # --- symbols ----------------------------------------------------------------------
 for sym in prepare_dji_irradiance dji_hmatrix dji_band_warp normalize_view_angle \
            _view_angle_profile _ramp_profile _ramp_profile_groundfree _frame_signs \
-           _is_m3m; do
+           _is_m3m write_radiometric_summary _normalize_view_angle; do
     grep -q "def ${sym}" "$MS" && note "symbol ${sym}" "ok" || bad "symbol ${sym}"
 done
 grep -q "def is_m3m" "$PHOTO" && note "symbol photo.is_m3m" "ok" || bad "symbol photo.is_m3m"
@@ -107,6 +107,26 @@ grep -q 'projection = "brown"' "$PHOTO" && note "per-band brown projection" "ok"
 grep -q 'band = self.band_name.strip()' "$PHOTO" && note "per-band camera id" "ok" \
     || bad "per-band camera id"
 
+# --- radiometric provenance (DD-196 Phase 1) --------------------------------------
+# The gate refused 2 of 3 flights for weeks with nobody able to know, because it wrote
+# nothing down. Three properties are asserted, because losing any one of them restores
+# exactly that silence and none of them is visible in the output:
+#
+#   the writer is CALLED from a `finally`  — a `return` on a refusal path is the one
+#                                            that must still leave a record, and it is
+#                                            the one a per-return call site forgets
+#   the sidecar has a NAME                 — the wrapper reads it by that constant, and
+#                                            a rename is silent on both sides
+#   floats are SANITISED                   — a NaN control correlation is normal on a
+#                                            degenerate flight; bare NaN is invalid JSON
+grep -q "finally:" "$MS" && grep -q "write_radiometric_summary(" "$MS" \
+    && note "radiometric summary written in a finally" "ok" \
+    || bad "radiometric summary written in a finally"
+grep -q "RADIOMETRIC_SUMMARY_FILENAME" "$MS" && note "radiometric sidecar name" "ok" \
+    || bad "radiometric sidecar name"
+grep -q "def _finite_or_none" "$MS" && note "radiometric float sanitiser" "ok" \
+    || bad "radiometric float sanitiser"
+
 # --- ODX log API ------------------------------------------------------------------
 # log.ODM_WARNING does not exist in ODX. It is muscle memory from other codebases and
 # AttributeErrors at runtime, on the error path — the one place you find out last.
@@ -128,5 +148,6 @@ if [ "$fail" != "0" ]; then
     echo "AGRO OVERLAY VERIFICATION FAILED — this artifact does NOT carry the corrections."
     exit 1
 fi
-echo "agro overlay verified: 10 symbols, 2 call sites, 5 XMP tags, model-level gating,"
-echo "seam switch, shape guard, no log.ODM_WARNING, all four files compile."
+echo "agro overlay verified: 12 symbols, 2 call sites, 5 XMP tags, model-level gating,"
+echo "seam switch, shape guard, four-band reconstruction, per-band camera models,"
+echo "radiometric provenance, no log.ODM_WARNING, all four files compile."
