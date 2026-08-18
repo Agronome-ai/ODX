@@ -102,8 +102,14 @@ grep -q "all_bands_reconstructable(reconstruction.multi_camera)" "$OSFM_STAGE" \
 # Asserted rather than trusted because the failure is SILENT and slow: a collapsed camera
 # id still reconstructs, still produces a map, and is only visible as ~0.3-0.8 m of drift
 # against a PPK track -- no error, no warning, nothing a reviewer would notice.
-grep -q 'projection = "brown"' "$PHOTO" && note "per-band brown projection" "ok" \
+grep -q 'def _set_mspec_projection' "$PHOTO" && note "per-band brown projection" "ok" \
     || bad "per-band brown projection"
+# The CALL SITE, not just the symbol. The first cut of this change set the projection in a
+# local variable inside camera_id(), so the id string said "brown" while the camera stayed
+# perspective -- a symbol-only check would have called that shipped, and a full flight
+# reconstructed cleanly with four models that could not hold a principal point.
+grep -q 'self._set_mspec_projection()' "$PHOTO" && note "per-band projection call site" "ok" \
+    || bad "per-band projection call site"
 grep -q 'band = self.band_name.strip()' "$PHOTO" && note "per-band camera id" "ok" \
     || bad "per-band camera id"
 
