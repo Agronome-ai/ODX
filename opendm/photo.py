@@ -509,6 +509,14 @@ class ODM_Photo:
                         if camera_projection in projections:
                             self.camera_projection = camera_projection
 
+                    # DD-200 D2. The M3M sets Camera:ModelType=perspective, which overrides the
+                    # 'brown' default set in __init__ -- so this must run AFTER that override or
+                    # it is silently undone. Perspective carries (focal, k1, k2) and has no
+                    # principal-point field at all, so the per-band split above is a no-op
+                    # without it: four models that each still assume the optical axis is dead
+                    # centre, when the bands differ by up to 31 px.
+                    self._set_mspec_projection()
+
                     # OPK
                     self.set_attr_from_xmp_tag('yaw', xtags, ['@drone-dji:FlightYawDegree', '@Camera:Yaw', 'Camera:Yaw'], float)
                     self.set_attr_from_xmp_tag('pitch', xtags, ['@drone-dji:GimbalPitchDegree', '@Camera:Pitch', 'Camera:Pitch'], float)
@@ -888,6 +896,11 @@ class ODM_Photo:
     def is_rgb(self):
         return self.band_name.upper() in ["RGB", "REDGREENBLUE"]
 
+    def _set_mspec_projection(self):
+        """Multispectral bands get `brown`, which can hold a per-band principal point."""
+        if self.is_m3m() and self.band_name and self.band_name.strip().upper() != "RGB":
+            self.camera_projection = "brown"
+
     def camera_id(self):
         # DD-200: an M3M is FOUR physically different lenses in one head, not one camera with
         # four filters. Every band reports byte-identical EXIF -- same make, model, 2592x1944,
@@ -910,10 +923,13 @@ class ODM_Photo:
         # frame is a fifth, genuinely different lens -- but the RGB pass is a separate project
         # that nothing here has measured, so it keeps upstream behaviour untouched. Widening to
         # it is a decision, not a side effect.
-        projection = self.camera_projection
+        #
+        # The projection is READ from the attribute, never decided here. Deciding it locally
+        # put "brown" in the id string while the camera stayed perspective -- four models that
+        # still could not represent a principal point, which is the no-op D2 exists to prevent.
+        # It is set in _set_mspec_projection(), at the one place the XMP override lands.
         band = ""
         if self.is_m3m() and self.band_name and self.band_name.strip().upper() != "RGB":
-            projection = "brown"
             band = self.band_name.strip()
         return " ".join(
                 [
@@ -922,7 +938,7 @@ class ODM_Photo:
                     self.camera_model.strip(),
                     str(int(self.width)),
                     str(int(self.height)),
-                    projection,
+                    self.camera_projection,
                     str(float(self.focal_ratio))[:6],
                     band,
                 ]

@@ -25,7 +25,12 @@ from opendm.photo import ODM_Photo
 
 
 def _photo(band, make="DJI", model="M3M", width=2592, height=1944, focal_ratio=0.85):
-    """A Photo carrying only what camera_id() reads, without touching the filesystem."""
+    """A Photo carrying only what camera_id() reads, without touching the filesystem.
+
+    `camera_projection` starts as "perspective" deliberately: that is what the M3M's own
+    Camera:ModelType XMP tag sets it to, overriding the 'brown' default in __init__. A
+    fixture that started from "brown" would pass even if the projection were never set.
+    """
     p = ODM_Photo.__new__(ODM_Photo)
     p.camera_make = make
     p.camera_model = model
@@ -34,6 +39,7 @@ def _photo(band, make="DJI", model="M3M", width=2592, height=1944, focal_ratio=0
     p.camera_projection = "perspective"
     p.focal_ratio = focal_ratio
     p.band_name = band
+    p._set_mspec_projection()
     return p
 
 
@@ -44,10 +50,32 @@ class TestPerBandCameraModels(unittest.TestCase):
         self.assertEqual(len(ids), 4, f"bands collapsed into {len(ids)} camera(s): {ids}")
 
     def test_bands_use_the_brown_projection(self):
-        """Perspective has no cx/cy, so splitting without brown changes nothing that matters."""
+        """Perspective has no cx/cy, so splitting without brown changes nothing that matters.
+
+        Asserts the ATTRIBUTE, not the id string. A first cut of this change decided the
+        projection inside camera_id(), which put "brown" in the name while the camera stayed
+        perspective -- four models that still could not hold a principal point. The id read
+        correct and a full flight reconstructed cleanly; only `projection_type` in the
+        engine's own camera_models.json gave it away.
+        """
         for band in ("Green", "Red", "RedEdge", "NIR"):
-            self.assertIn("brown", _photo(band).camera_id())
-            self.assertNotIn("perspective", _photo(band).camera_id())
+            p = _photo(band)
+            self.assertEqual(p.camera_projection, "brown")
+            self.assertIn("brown", p.camera_id())
+
+    def test_xmp_model_type_does_not_win_over_brown(self):
+        """The M3M ships Camera:ModelType=perspective, which overrides the 'brown' default in
+        __init__. If the per-band projection is set before that override lands, it is silently
+        undone -- the ordering bug this test exists to pin."""
+        p = _photo("Red")
+        p.camera_projection = "perspective"   # as the XMP tag leaves it
+        p._set_mspec_projection()             # must run after, and must win
+        self.assertEqual(p.camera_projection, "brown")
+
+    def test_non_m3m_projection_untouched(self):
+        """A Sequoia's own model type must survive; we only override our own camera."""
+        p = _photo("Green", make="Parrot", model="Sequoia")
+        self.assertEqual(p.camera_projection, "perspective")
 
     def test_same_band_is_stable(self):
         """Two frames of one band are the same camera -- otherwise every frame self-calibrates."""
