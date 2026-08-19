@@ -509,14 +509,6 @@ class ODM_Photo:
                         if camera_projection in projections:
                             self.camera_projection = camera_projection
 
-                    # DD-200 D2. The M3M sets Camera:ModelType=perspective, which overrides the
-                    # 'brown' default set in __init__ -- so this must run AFTER that override or
-                    # it is silently undone. Perspective carries (focal, k1, k2) and has no
-                    # principal-point field at all, so the per-band split above is a no-op
-                    # without it: four models that each still assume the optical axis is dead
-                    # centre, when the bands differ by up to 31 px.
-                    self._set_mspec_projection()
-
                     # OPK
                     self.set_attr_from_xmp_tag('yaw', xtags, ['@drone-dji:FlightYawDegree', '@Camera:Yaw', 'Camera:Yaw'], float)
                     self.set_attr_from_xmp_tag('pitch', xtags, ['@drone-dji:GimbalPitchDegree', '@Camera:Pitch', 'Camera:Pitch'], float)
@@ -896,41 +888,7 @@ class ODM_Photo:
     def is_rgb(self):
         return self.band_name.upper() in ["RGB", "REDGREENBLUE"]
 
-    def _set_mspec_projection(self):
-        """Multispectral bands get `brown`, which can hold a per-band principal point."""
-        if self.is_m3m() and self.band_name and self.band_name.strip().upper() != "RGB":
-            self.camera_projection = "brown"
-
     def camera_id(self):
-        # DD-200: an M3M is FOUR physically different lenses in one head, not one camera with
-        # four filters. Every band reports byte-identical EXIF -- same make, model, 2592x1944,
-        # same FocalLength -- so without the band in this key all four hash to ONE camera id and
-        # the reconstruction fits a single lens model to four different lenses. It stays
-        # internally consistent by bending camera POSES to absorb the mismatch, which is why the
-        # symptom was never a wrong-looking map, just a map in slightly the wrong place: measured
-        # 0.30-0.78 m of disagreement with a PPK track, cut 18-79% by splitting them.
-        #
-        # `brown` rather than `perspective` because perspective's parameters are (focal, k1, k2)
-        # -- it has no principal-point field at all, so the offset that actually differs between
-        # bands (up to 31 px) cannot be represented even in principle. Splitting into four
-        # perspective models would be four copies of the same limitation.
-        #
-        # NOT seeded from DJI's factory calibration: tested seven ways across three flights and
-        # it never beat a neutral start on both metrics (DD-200 D3). The values are correct for
-        # the job DJI documents -- undistorting pixels -- but the solver has 240 in-situ images
-        # of the lens as it is today and does better from zero.
-        # Gated to the MS bands only. `band_name` defaults to "RGB", and the M3M's colour
-        # frame is a fifth, genuinely different lens -- but the RGB pass is a separate project
-        # that nothing here has measured, so it keeps upstream behaviour untouched. Widening to
-        # it is a decision, not a side effect.
-        #
-        # The projection is READ from the attribute, never decided here. Deciding it locally
-        # put "brown" in the id string while the camera stayed perspective -- four models that
-        # still could not represent a principal point, which is the no-op D2 exists to prevent.
-        # It is set in _set_mspec_projection(), at the one place the XMP override lands.
-        band = ""
-        if self.is_m3m() and self.band_name and self.band_name.strip().upper() != "RGB":
-            band = self.band_name.strip()
         return " ".join(
                 [
                     "v2",
@@ -940,9 +898,8 @@ class ODM_Photo:
                     str(int(self.height)),
                     self.camera_projection,
                     str(float(self.focal_ratio))[:6],
-                    band,
                 ]
-            ).strip().lower()
+            ).lower()
 
     def to_opensfm_exif(self, rolling_shutter = False, rolling_shutter_readout = 0, gps_accuracy = 10.0):
         capture_time = 0.0
