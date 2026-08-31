@@ -13,6 +13,11 @@
 # (374db4aa), and upstream changed none of them between that base and the mirrored
 # commit. So copying our copies applies exactly this branch's commits and reverts
 # nothing. The assertion below is what keeps that true as upstream moves.
+#
+# BUILDING THIS OUTSIDE AGRONOME: the base below is our private mirror and you cannot
+# pull it. Repoint FROM at an ODX image you control — and before you do, verify that the
+# four files it contains are byte-identical to this branch's merge base (374db4aa), or
+# the COPY will silently revert whatever upstream changed in them since. See FORK.md §7.
 FROM northamerica-northeast2-docker.pkg.dev/agronome-shared-services/agronome/engine-odx@sha256:c3db2d93abcbe216229be03f0806196b4a25d11b5ac54ee52d01abd0eee32c50
 
 COPY opendm/photo.py            /code/opendm/photo.py

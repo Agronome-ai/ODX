@@ -1,3 +1,23 @@
+> ## 🌱 This is the Agronome fork of ODX
+>
+> A fork of [WebODM/ODX](https://github.com/WebODM/ODX) **3.8.2** carrying DJI Mavic 3
+> Multispectral (M3M) radiometric and band-handling corrections that upstream does not have:
+> DLS irradiance normalisation, factory band alignment, view-angle and across-swath
+> normalisation with a two-half control gate, four-band reconstruction, and selectable seam
+> levelling.
+>
+> **➡️ [`FORK.md`](FORK.md) — what changed, why, what it was measured on, and what we tried
+> and reverted.** [`DJI_M3M_FINDINGS.md`](DJI_M3M_FINDINGS.md) is the underlying evidence.
+>
+> `master` in this repo tracks upstream **verbatim**, so `git diff master...HEAD` is exactly
+> our changes and nothing else. The badges below are upstream's and describe upstream's
+> builds, not this fork's.
+>
+> Modified by Agronome AI Inc., 2026-08-01 – 2026-08-19, from upstream commit `374db4aa`.
+> Licensed under AGPL-3.0, same as upstream.
+
+---
+
 # ODX
 
 ![CPU Build](https://img.shields.io/github/actions/workflow/status/WebODM/ODX/publish-docker.yml?branch=master&label=docker%20CPU) ![GPU Build](https://img.shields.io/github/actions/workflow/status/WebODM/ODX/publish-docker-gpu.yml?branch=master&label=docker%20GPU) ![Windows Build](https://img.shields.io/github/actions/workflow/status/WebODM/ODX/publish-windows.yml?branch=master&label=windows) ![Version](https://img.shields.io/github/v/release/WebODM/ODX) ![License](https://img.shields.io/github/license/WebODM/ODX) ![Contributors](https://img.shields.io/github/contributors/WebODM/ODX) ![Updated](https://img.shields.io/github/last-commit/WebODM/ODX)
