@@ -1,6 +1,6 @@
 > ## 🌱 This is the Agronome fork of ODX
 >
-> A fork of [WebODM/ODX](https://github.com/WebODM/ODX) **3.8.2** carrying DJI Mavic 3
+> A fork of [WebODM/ODX](https://github.com/WebODM/ODX) **3.8.3** carrying DJI Mavic 3
 > Multispectral (M3M) radiometric and band-handling corrections that upstream does not have:
 > DLS irradiance normalisation, factory band alignment, view-angle and across-swath
 > normalisation with a two-half control gate, four-band reconstruction, and selectable seam
@@ -13,7 +13,7 @@
 > our changes and nothing else. The badges below are upstream's and describe upstream's
 > builds, not this fork's.
 >
-> Modified by Agronome AI Inc., 2026-08-01 – 2026-08-19, from upstream commit `374db4aa`.
+> Modified by Agronome AI Inc., 2026-08-01 – 2026-08-31, from upstream commit `18813214`.
 > Licensed under AGPL-3.0, same as upstream.
 
 ---

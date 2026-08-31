@@ -37,8 +37,8 @@ registry to put them in (`DJI_M3M_FINDINGS.md` §6).
 | upstream | `https://github.com/WebODM/ODX` |
 | **shipping branch** | **`agronome/dji-m3m-multispectral`** — everything we ship |
 | `master` | clean upstream mirror, **0 commits ahead**. Keep it that way. |
-| merge base | `374db4aa` |
-| ODX version at that base | **3.8.2** (`VERSION`) |
+| merge base | `18813214` (ODX 3.8.3, synced 2026-08-31) |
+| ODX version at that base | **3.8.3** (`VERSION`) |
 | size of the fork | 15 files, ~2,700 lines added |
 
 **Never commit to `master`.** It is the reference we diff against to know what is ours —
@@ -145,16 +145,63 @@ is load-bearing; that file says why.
 on this branch is pure Python under `opendm/` and `stages/`, so there is nothing to
 recompile; a source build would be hours of SuperBuild for four files.
 
-That is safe **because it was verified, not assumed**: at the time it was written, all
-four files inside the mirrored image were byte-identical to this branch's merge base,
-and upstream had changed none of them in between. **If you re-mirror a newer upstream,
-re-verify that.** The applied-assertion is what keeps it honest as upstream moves.
+That is safe **only while the mirror is built from the upstream commit this branch is
+based on.** The `COPY` carries **four files**; every other upstream change is whatever the
+base image already had. Overlay 3.8.3's four onto a 3.8.2 base and you get a *mixed
+engine* — our corrections at 3.8.3, and `gsd.py`, `orthophoto.py`, `config.py` still at
+3.8.2. It runs, it looks right, and it is not the engine anyone thinks it is.
+
+> ⚠️ The obvious version of this warning is "3.8.3 bumped OpenSfM and a `COPY` cannot
+> deliver a recompile". **That is false, and it was written here before being checked.**
+> The mirror is tagged `v3.8.2-0f3864ea`, and `0f3864ea` *is* the last OpenSfM bump — the
+> pin is `029bf053` both there and at 3.8.3. The real reason to re-mirror is duller and
+> more general: **anything upstream changes outside our four files.**
+
+`agro.Dockerfile` now carries a **VERSION guard** that compares the repo's `VERSION`
+against the base image's `/code/VERSION` and fails the build when they differ. Same
+reasoning as the applied-assertion (§5): this is the one failure a four-file `COPY` cannot
+otherwise reveal, and every other mechanism in the chain fails silently.
+
+### 🛑 Syncing to a newer upstream — the order matters
+
+1. `git checkout master && git merge --ff-only upstream/master && git push origin master`
+   — the mirror stays 0 ahead, always a fast-forward.
+2. **Rebase the shipping branch onto `master` and force-push.** We keep this branch linear
+   on top of upstream so `git diff master...HEAD` reads as one clean patch series — which
+   is the whole promise `FORK.md` makes to an outside reviewer. Tag first
+   (`backup/pre-rebase-<date>`, pushed) so the pre-rebase tip stays reachable.
+
+   Three things a rebase here will bite you with:
+
+   - **`git rebase` silently DROPS merge commits.** The 3.8.3 sync was first done as a
+     merge, and rebasing it discarded the entire commit — VERSION guard, docs and all —
+     while reporting success. Verify content after rebasing (`git diff <old-tip> HEAD`),
+     never just the exit code.
+   - **Every fork SHA is rewritten, and this file cites them.** Re-grep for 8-hex strings
+     afterwards and remap; a citation that no longer resolves is worse than none, because
+     it reads as verified.
+   - Merged PRs keep pointing at the pre-rebase commits. That is expected; the backup tag
+     is what keeps them reachable.
+3. Check what upstream touched in *our* four files —
+   `git log --oneline <old>..upstream/master -- opendm/multispectral.py opendm/photo.py stages/run_opensfm.py stages/mvstex.py`
+   — and read those diffs, even when the sync is clean. **A clean auto-merge is not a
+   safe auto-merge.** In the 3.8.2 → 3.8.3 sync, upstream added `DLS:HorizontalIrradiance`
+   as a source for `horizontal_irradiance`, and our DLS path is gated on M3M photos having
+   *no* `horizontal_irradiance` — a tag the M3M happens not to write, checked with
+   exiftool on real imagery rather than reasoned about. Had it written one, a zero-conflict
+   merge would have silently disabled `prepare_dji_irradiance` on every flight.
+4. Update `VERSION` references, the merge base, and the AGPL §5(a) date range in
+   `FORK.md`, `README.md` and this file.
+5. `./agro_verify.sh .` and `./agro_test.sh --docker`.
+6. **Re-mirror `engine-odx` from the new upstream and repoint the `FROM` digest before
+   building `engine-odx-agronome`.** The VERSION guard fails the build until you do — that
+   is the point, not an obstacle to work around.
 
 ### Image tag convention — it encodes both parents
 
 ```
 v<odx-version>-<upstream-sha>-m3m-<fork-sha>
-e.g.   v3.8.2-0f3864ea-m3m-0cdec216
+e.g.   v3.8.2-0f3864ea-m3m-171a0eb5
 ```
 
 **This is the fastest way to answer "is my change deployed?"** Read the tag, compare
@@ -491,12 +538,12 @@ builds is indistinguishable from an unfixed bug in production.
   since it uses graph rounds rather than N×64 GPS pairs — but that is reasoning, not a
   measurement.
 - **Threshold calibration is still deferred, but no longer blocked.** DD-196 shipped
-  (`b106d151`), so every M3M flight now leaves an `agronome_radiometric.json` recording
+  (`92327505`), so every M3M flight now leaves an `agronome_radiometric.json` recording
   what the gate decided and on what evidence. What is owed is the *aggregation*: the gate
   refused 2 of 3 re-driven flights, and one (Green control 0.62 against a 0.80 limit) is
   near enough the line to be worth understanding, but setting thresholds needs a corpus of
   sidecars, not three. **Do not touch the constants until that corpus exists.**
-- **One reconstruction feeding both orthos.** The DD-200 revert (`b9f84514`) established
+- **One reconstruction feeding both orthos.** The DD-200 revert (`166280d5`) established
   that the multispectral and RGB orthos come from two *independent* reconstructions, so
   improving one in isolation moves them apart — MS↔RGB went 0.15 m → 0.62 m on a flat
   flight. The RGB frames are already in the multispectral dataset (885 usable = 177
