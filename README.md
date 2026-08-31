@@ -1,6 +1,6 @@
 > ## 🌱 This is the Agronome fork of ODX
 >
-> A fork of [WebODM/ODX](https://github.com/WebODM/ODX) **3.8.2** carrying DJI Mavic 3
+> A fork of [WebODM/ODX](https://github.com/WebODM/ODX) **3.8.3** carrying DJI Mavic 3
 > Multispectral (M3M) radiometric and band-handling corrections that upstream does not have:
 > DLS irradiance normalisation, factory band alignment, view-angle and across-swath
 > normalisation with a two-half control gate, four-band reconstruction, and selectable seam
@@ -13,7 +13,7 @@
 > our changes and nothing else. The badges below are upstream's and describe upstream's
 > builds, not this fork's.
 >
-> Modified by Agronome AI Inc., 2026-08-01 – 2026-08-19, from upstream commit `374db4aa`.
+> Modified by Agronome AI Inc., 2026-08-01 – 2026-08-31, from upstream commit `18813214`.
 > Licensed under AGPL-3.0, same as upstream.
 
 ---
@@ -22,9 +22,9 @@
 
 ![CPU Build](https://img.shields.io/github/actions/workflow/status/WebODM/ODX/publish-docker.yml?branch=master&label=docker%20CPU) ![GPU Build](https://img.shields.io/github/actions/workflow/status/WebODM/ODX/publish-docker-gpu.yml?branch=master&label=docker%20GPU) ![Windows Build](https://img.shields.io/github/actions/workflow/status/WebODM/ODX/publish-windows.yml?branch=master&label=windows) ![Version](https://img.shields.io/github/v/release/WebODM/ODX) ![License](https://img.shields.io/github/license/WebODM/ODX) ![Contributors](https://img.shields.io/github/contributors/WebODM/ODX) ![Updated](https://img.shields.io/github/last-commit/WebODM/ODX)
 
-> **📢 Now faster than ODM, with OpenSfM 1.0 support, GPU based feature matching, NVIDIA GeForce RTX 50 Series support, checkpoints support and tons of improvements!** [Read the announcement](https://webodm.org/blog/announcement/)
+> **📢 Now with OpenSfM 1.0 support, GPU based feature matching, NVIDIA GeForce RTX 50 Series support, checkpoints support and tons of improvements!** [Read the announcement](https://webodm.org/blog/announcement/)
 
-> **If you like ODX, could you take a second and ⭐ the project? 🙏**
+> **If you like ODX, take a second and ⭐ the project 🙏**
 
 A free and open source photogrammetry engine for processing aerial and ground imagery. ODX turns images into:
 

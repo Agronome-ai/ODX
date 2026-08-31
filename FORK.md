@@ -19,12 +19,12 @@ forked, reviewed, and argued with — not as a supported product.
 | | |
 |---|---|
 | upstream | `https://github.com/WebODM/ODX` |
-| merge base | [`374db4aa`](https://github.com/WebODM/ODX/commit/374db4aa) ("Fix OpenSfM credits", 2026-07-30) |
-| ODX version at that base | **3.8.2** (`VERSION`) |
+| merge base | [`18813214`](https://github.com/WebODM/ODX/commit/18813214) (upstream `master`, 2026-08-31) |
+| ODX version at that base | **3.8.3** (`VERSION`) |
 | shipping branch | **`agronome/dji-m3m-multispectral`** — the default branch of this repo |
 | `master` | a **verbatim mirror of upstream**, deliberately 0 commits ahead |
 | size | 15 files, ~2,700 lines added |
-| modified | 2026-08-01 – 2026-08-19 |
+| modified | 2026-08-01 – 2026-08-31 |
 
 `master` being a clean mirror is what makes the fork legible: `git diff master...HEAD` is
 *exactly* what we changed and nothing else. Please keep that property if you contribute.
@@ -34,7 +34,7 @@ forked, reviewed, and argued with — not as a supported product.
 ODX is licensed under the **GNU Affero General Public License v3.0**, and so is this fork.
 
 In satisfaction of AGPL-3.0 §5(a): the following files have been **modified by Agronome AI
-Inc. between 2026-08-01 and 2026-08-19**, relative to upstream commit `374db4aa`:
+Inc. between 2026-08-01 and 2026-08-31**, relative to upstream commit `18813214`:
 
 ```
 opendm/multispectral.py
@@ -362,10 +362,16 @@ docker build -f agro.Dockerfile -t odx-m3m .
 ```
 
 The base image is pinned **by digest**, not by tag — ODX is a rolling release with no
-version tags, and a floating tag makes the build unreproducible. If you build this
-yourself, repoint the `FROM` at an ODX image you control and **re-verify** that the four
-overlaid files are byte-identical to this fork's merge base first, or the `COPY` will
-silently revert upstream changes made since.
+version tags, and a floating tag makes the build unreproducible.
+
+**The base must be built from the same upstream commit this branch is based on**, not
+merely "some ODX". Overlaying four files from 3.8.3 onto a 3.8.2 image gives you a *mixed
+engine*: these corrections at the new version, everything else — including OpenSfM, which
+3.8.3 bumped in SuperBuild and which no `COPY` can deliver — still at the old one. It runs
+and it looks right. The Dockerfile carries a **VERSION guard** that compares the repo's
+`VERSION` against the base image's and fails the build when they differ, so if you repoint
+`FROM` at an ODX image you control, that check tells you whether you picked a compatible
+one.
 
 Local development:
 

@@ -37,8 +37,8 @@ registry to put them in (`DJI_M3M_FINDINGS.md` §6).
 | upstream | `https://github.com/WebODM/ODX` |
 | **shipping branch** | **`agronome/dji-m3m-multispectral`** — everything we ship |
 | `master` | clean upstream mirror, **0 commits ahead**. Keep it that way. |
-| merge base | `374db4aa` |
-| ODX version at that base | **3.8.2** (`VERSION`) |
+| merge base | `18813214` (ODX 3.8.3, synced 2026-08-31) |
+| ODX version at that base | **3.8.3** (`VERSION`) |
 | size of the fork | 15 files, ~2,700 lines added |
 
 **Never commit to `master`.** It is the reference we diff against to know what is ours —
@@ -145,10 +145,39 @@ is load-bearing; that file says why.
 on this branch is pure Python under `opendm/` and `stages/`, so there is nothing to
 recompile; a source build would be hours of SuperBuild for four files.
 
-That is safe **because it was verified, not assumed**: at the time it was written, all
-four files inside the mirrored image were byte-identical to this branch's merge base,
-and upstream had changed none of them in between. **If you re-mirror a newer upstream,
-re-verify that.** The applied-assertion is what keeps it honest as upstream moves.
+That is safe **only while the mirror is built from the upstream commit this branch is
+based on.** Overlay four files from 3.8.3 onto a 3.8.2 image and you get a *mixed engine*:
+our corrections at the new version, everything else — including OpenSfM, which 3.8.3
+bumped in SuperBuild and which **no `COPY` can deliver** — still at the old one. It runs,
+it looks right, and it is not the engine anyone thinks it is.
+
+`agro.Dockerfile` now carries a **VERSION guard** that compares the repo's `VERSION`
+against the base image's `/code/VERSION` and fails the build when they differ. Same
+reasoning as the applied-assertion (§5): this is the one failure a four-file `COPY` cannot
+otherwise reveal, and every other mechanism in the chain fails silently.
+
+### 🛑 Syncing to a newer upstream — the order matters
+
+1. `git checkout master && git merge --ff-only upstream/master && git push origin master`
+   — the mirror stays 0 ahead, always a fast-forward.
+2. Branch off the shipping branch and `git merge master`. **Merge, do not rebase.** The
+   shipping branch is public and is this repo's default branch, with a dozen merged PRs in
+   it; rebasing rewrites all of that and needs a force-push to the branch other people
+   clone. The linear history is not worth it.
+3. Check what upstream touched in *our* four files —
+   `git log --oneline <old>..upstream/master -- opendm/multispectral.py opendm/photo.py stages/run_opensfm.py stages/mvstex.py`
+   — and read those diffs, even when the merge is clean. **A clean auto-merge is not a
+   safe auto-merge.** In the 3.8.2 → 3.8.3 sync, upstream added `DLS:HorizontalIrradiance`
+   as a source for `horizontal_irradiance`, and our DLS path is gated on M3M photos having
+   *no* `horizontal_irradiance` — a tag the M3M happens not to write, checked with
+   exiftool on real imagery rather than reasoned about. Had it written one, a zero-conflict
+   merge would have silently disabled `prepare_dji_irradiance` on every flight.
+4. Update `VERSION` references, the merge base, and the AGPL §5(a) date range in
+   `FORK.md`, `README.md` and this file.
+5. `./agro_verify.sh .` and `./agro_test.sh --docker`.
+6. **Re-mirror `engine-odx` from the new upstream and repoint the `FROM` digest before
+   building `engine-odx-agronome`.** The VERSION guard fails the build until you do — that
+   is the point, not an obstacle to work around.
 
 ### Image tag convention — it encodes both parents
 
