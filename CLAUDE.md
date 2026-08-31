@@ -114,6 +114,17 @@ their own words.
 It does **not** govern our own fork. PRs inside `Agronome-ai/ODX` are normal and
 expected — PR #1 is how the shape guard landed.
 
+> 🛑 **`gh pr create` targets UPSTREAM by default here.** Because this repo is a GitHub
+> fork, a bare `gh pr create` resolves the base to `WebODM/ODX` — the exact thing the
+> rule above forbids. **Always pass `--repo Agronome-ai/ODX` explicitly:**
+>
+> ```bash
+> gh pr create --repo Agronome-ai/ODX --base agronome/dji-m3m-multispectral --head <branch> ...
+> ```
+>
+> It fails loudly today only because our branches share no commits with upstream's tip.
+> That is luck, not a safeguard — after an upstream rebase it would succeed.
+
 ---
 
 ## 3. Build and deploy chain
