@@ -39,7 +39,7 @@ registry to put them in (`DJI_M3M_FINDINGS.md` §6).
 | `master` | clean upstream mirror, **0 commits ahead**. Keep it that way. |
 | merge base | `6a75a351` (ODX 3.8.4, synced 2026-10-16) |
 | ODX version at that base | **3.8.4** (`VERSION`) |
-| size of the fork | 15 files, ~2,700 lines added |
+| size of the fork | 16 files, ~3,400 lines added |
 | ⚠️ package rename | upstream moved `opendm/` → `modules/` in `97c30679` (2026-10-15). `stages/` did not move. |
 
 **Never commit to `master`.** It is the reference we diff against to know what is ours —

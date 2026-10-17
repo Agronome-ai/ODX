@@ -10,12 +10,21 @@
 #
 # Safe to overlay ONLY while the mirrored image is built from the same upstream commit
 # this branch is based on. This COPY carries FOUR files; every other upstream change is
-# whatever the base image already had. Overlay 3.8.3's four files onto a 3.8.2 base and
-# you get a mixed engine — our corrections at 3.8.3, and gsd.py, orthophoto.py and
+# whatever the base image already had. Overlay 3.8.4's four files onto a 3.8.2 base and
+# you get a mixed engine — our corrections at 3.8.4, and gsd.py, orthophoto.py and
 # config.py still at 3.8.2. It runs, it looks right, and it is not the engine anyone
-# thinks it is. (3.8.3 does NOT change OpenSfM: the pin is 029bf053 at both the mirror's
-# commit and 3.8.3. Verified, because the plausible-sounding version of this comment
-# said otherwise.)
+# thinks it is.
+#
+# At 3.8.4 it is worse than mixed Python, and the COPY cannot even reach it: upstream
+# renamed the package opendm/ -> modules/ (97c30679), so the COPYs below write
+# /code/modules/*.py into an image whose code still lives in /code/opendm/. Nothing would
+# import our files at all. The VERSION guard catches it first; that is the only reason it
+# is not a silent disaster.
+#
+# 3.8.4 also moves OpenSfM (029bf053 -> a125a3d1), so re-mirroring genuinely recompiles it.
+# Do NOT reuse the 3.8.2 -> 3.8.3 reasoning, which said the pin was unchanged: that was
+# true then (verified, because the plausible-sounding version of the comment said
+# otherwise) and is false now.
 #
 # The VERSION guard below is what makes that failure loud. It is the same reasoning as
 # the applied-assertion: every mechanism in this chain otherwise fails silently.

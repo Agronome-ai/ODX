@@ -23,7 +23,7 @@ forked, reviewed, and argued with — not as a supported product.
 | ODX version at that base | **3.8.4** (`VERSION`) |
 | shipping branch | **`agronome/dji-m3m-multispectral`** — the default branch of this repo |
 | `master` | a **verbatim mirror of upstream**, deliberately 0 commits ahead |
-| size | 15 files, ~2,700 lines added |
+| size | 16 files, ~3,400 lines added |
 | modified | 2026-08-01 – 2026-10-16 |
 
 `master` being a clean mirror is what makes the fork legible: `git diff master...HEAD` is
