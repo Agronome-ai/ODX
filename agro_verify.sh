@@ -25,8 +25,8 @@ fail=0
 note() { printf '  %-58s %s\n' "$1" "$2"; }
 bad()  { note "$1" "MISSING"; fail=1; }
 
-MS="$ROOT/opendm/multispectral.py"
-PHOTO="$ROOT/opendm/photo.py"
+MS="$ROOT/modules/multispectral.py"
+PHOTO="$ROOT/modules/photo.py"
 OSFM_STAGE="$ROOT/stages/run_opensfm.py"
 MVSTEX="$ROOT/stages/mvstex.py"
 
@@ -114,6 +114,18 @@ grep -q "RADIOMETRIC_SUMMARY_FILENAME" "$MS" && note "radiometric sidecar name" 
 grep -q "def _finite_or_none" "$MS" && note "radiometric float sanitiser" "ok" \
     || bad "radiometric float sanitiser"
 
+# --- resize_match y-scale --------------------------------------------------------
+# Upstream's resize_match computes fy and then passes fx for it, so a band whose aspect
+# ratio differs from the primary's gets the wrong vertical scale. Dormant on the M3M
+# (all four MS bands are 2592x1944) and live on mixed-dimension rigs. Reported upstream
+# as WebODM/ODX#41 and closed as completed with the typo still in place, so an upstream
+# sync can hand it straight back to us.
+if grep -v '^[[:space:]]*#' "$MS" | grep -q "fy=fx"; then
+    note "resize_match y-scale (fy=fx typo)" "FOUND ONE"; fail=1
+else
+    note "resize_match y-scale" "ok"
+fi
+
 # --- ODX log API ------------------------------------------------------------------
 # log.ODM_WARNING does not exist in ODX. It is muscle memory from other codebases and
 # AttributeErrors at runtime, on the error path — the one place you find out last.
@@ -137,4 +149,4 @@ if [ "$fail" != "0" ]; then
 fi
 echo "agro overlay verified: 12 symbols, 2 call sites, 5 XMP tags, model-level gating,"
 echo "seam switch, shape guard, four-band reconstruction,"
-echo "radiometric provenance, no log.ODM_WARNING, all four files compile."
+echo "radiometric provenance, resize_match y-scale, no log.ODM_WARNING, all four compile."

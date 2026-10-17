@@ -2,7 +2,7 @@
 #
 # Upstream ODX ships seven test files and its own CI (`test-build-prs.yml`) never runs
 # any of them — it builds Docker images and a Windows installer and nothing else. So
-# this fork's changes to opendm/ and stages/ were, until now, covered by no automated
+# this fork's changes to modules/ and stages/ were, until now, covered by no automated
 # test at all. This workflow is that coverage.
 #
 # Two jobs, deliberately independent:
@@ -60,7 +60,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD/tests:/code/tests" \
-            -v "$PWD/opendm:/code/opendm" \
+            -v "$PWD/modules:/code/modules" \
             -v "$PWD/stages:/code/stages" \
             -v "$PWD/agro_test.sh:/code/agro_test.sh:ro" \
             --entrypoint bash \

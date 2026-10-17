@@ -18,7 +18,7 @@ because they cost us weeks and may save you the same.
 
 **This is the biggest single finding and it needs no code change — only a doc change.**
 
-`opendm/osfm.py`:
+`modules/osfm.py` (`opendm/osfm.py` before the 3.8.4 package rename):
 
 ```python
 if args.matcher_neighbors > 0:
@@ -343,7 +343,7 @@ grid).
 
 The corrections above are model-specific — vignette coefficients, band layout, DLS
 response and optical-centre offsets differ across M3M, M4E, P4 Multispectral and
-M2EA. But `opendm` has no camera database: geometry is derived from EXIF at runtime,
+M2EA. But the engine has no camera database: geometry is derived from EXIF at runtime,
 which works because every camera writes focal length and image size, and radiometry
 has nowhere to live. The only model-level branch we found is a hardcoded thermal
 check for `MAVIC2-ENTERPRISE-ADVANCED`.

@@ -1,7 +1,7 @@
 # Agronome ODX engine — upstream ODX plus this branch's DJI M3M corrections.
 #
 # Built as a THIN OVERLAY on our own mirrored copy of upstream ODX, not from source:
-# every change on this branch is pure Python under opendm/ and stages/, so there is
+# every change on this branch is pure Python under modules/ and stages/, so there is
 # nothing to recompile. A source build would take hours of SuperBuild for four files.
 #
 # FROM our mirror pinned by DIGEST, never `webodm/odx:latest` (DD-171 D12): upstream
@@ -39,8 +39,8 @@ RUN test "$(cat /code/VERSION)" = "$(cat /tmp/agro_expected_version)" || { \
         exit 1; \
     }; rm -f /tmp/agro_expected_version
 
-COPY opendm/photo.py            /code/opendm/photo.py
-COPY opendm/multispectral.py    /code/opendm/multispectral.py
+COPY modules/photo.py           /code/modules/photo.py
+COPY modules/multispectral.py   /code/modules/multispectral.py
 COPY stages/run_opensfm.py      /code/stages/run_opensfm.py
 COPY stages/mvstex.py           /code/stages/mvstex.py
 

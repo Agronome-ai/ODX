@@ -1588,9 +1588,15 @@ def resize_match(image, dimension):
     if w != mw or h != mh:
         fx = mw/w
         fy = mh/h
+        # fy=fx was upstream's typo: fy is computed above and then never used, so a band
+        # whose aspect ratio differs from the primary's is scaled by the WRONG vertical
+        # factor. Dormant on the M3M (all four MS bands are 2592x1944, so the resize
+        # branch never fires) and live on any rig with mixed band dimensions -- e.g. a
+        # MicaSense Altum thermal or a RedEdge-P panchromatic band. Reported upstream as
+        # WebODM/ODX#41, which was closed as completed with the typo still in place.
         image = cv2.resize(image, None, 
                 fx=fx, 
-                fy=fx,
+                fy=fy,
                 interpolation=(cv2.INTER_AREA if (fx < 1.0 and fy < 1.0) else cv2.INTER_LANCZOS4))
 
     return image

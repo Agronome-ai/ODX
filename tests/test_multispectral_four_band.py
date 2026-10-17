@@ -13,7 +13,7 @@ product rather than a visible failure — the same reasoning as DD-171 D11/4d.
 
 import unittest
 
-from opendm import multispectral
+from modules import multispectral
 
 
 class _Photo:

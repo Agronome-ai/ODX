@@ -37,9 +37,10 @@ registry to put them in (`DJI_M3M_FINDINGS.md` §6).
 | upstream | `https://github.com/WebODM/ODX` |
 | **shipping branch** | **`agronome/dji-m3m-multispectral`** — everything we ship |
 | `master` | clean upstream mirror, **0 commits ahead**. Keep it that way. |
-| merge base | `18813214` (ODX 3.8.3, synced 2026-08-31) |
-| ODX version at that base | **3.8.3** (`VERSION`) |
+| merge base | `6a75a351` (ODX 3.8.4, synced 2026-10-16) |
+| ODX version at that base | **3.8.4** (`VERSION`) |
 | size of the fork | 15 files, ~2,700 lines added |
+| ⚠️ package rename | upstream moved `opendm/` → `modules/` in `97c30679` (2026-10-15). `stages/` did not move. |
 
 **Never commit to `master`.** It is the reference we diff against to know what is ours —
 and it is what makes `git diff master...HEAD` a complete, honest statement of the fork to
@@ -50,9 +51,9 @@ an outside reviewer. That property is now load-bearing for more than us.
 Four upstream source files, one upstream workflow, one upstream README, and our own:
 
 ```
-opendm/multispectral.py           all radiometry, band alignment, view-angle,
+modules/multispectral.py           all radiometry, band alignment, view-angle,
                                   four-band reconstruction, provenance
-opendm/photo.py                   five DJI XMP tags + ODM_Photo.is_m3m()
+modules/photo.py                   five DJI XMP tags + ODM_Photo.is_m3m()
 stages/run_opensfm.py             two call sites, the pose-copy guard, a model-level guard
 stages/mvstex.py                  selectable seam levelling
 .github/workflows/test-build-prs.yml  upstream's; trigger narrowed to master (2 lines)
@@ -70,7 +71,7 @@ tests/test_multispectral_four_band.py
 tests/test_multispectral_provenance.py
 ```
 
-Note that `opendm/osfm.py` is **not** in this list even though four-band reconstruction
+Note that `modules/osfm.py` is **not** in this list even though four-band reconstruction
 changes what it does. It already calls `get_photos_by_band`; we changed what that function
 returns. Keeping the change inside `multispectral.py` is why the overlay is still four
 Python files.
@@ -142,20 +143,27 @@ path, the consuming repo, the tag convention and the deploy chain live in the ap
 is load-bearing; that file says why.
 
 **The overlay is a thin `COPY` of four Python files, not a source build.** Every change
-on this branch is pure Python under `opendm/` and `stages/`, so there is nothing to
+on this branch is pure Python under `modules/` and `stages/`, so there is nothing to
 recompile; a source build would be hours of SuperBuild for four files.
 
 That is safe **only while the mirror is built from the upstream commit this branch is
 based on.** The `COPY` carries **four files**; every other upstream change is whatever the
-base image already had. Overlay 3.8.3's four onto a 3.8.2 base and you get a *mixed
-engine* — our corrections at 3.8.3, and `gsd.py`, `orthophoto.py`, `config.py` still at
+base image already had. Overlay 3.8.4's four onto a 3.8.2 base and you get a *mixed
+engine* — our corrections at 3.8.4, and `gsd.py`, `orthophoto.py`, `config.py` still at
 3.8.2. It runs, it looks right, and it is not the engine anyone thinks it is.
 
-> ⚠️ The obvious version of this warning is "3.8.3 bumped OpenSfM and a `COPY` cannot
-> deliver a recompile". **That is false, and it was written here before being checked.**
-> The mirror is tagged `v3.8.2-0f3864ea`, and `0f3864ea` *is* the last OpenSfM bump — the
-> pin is `029bf053` both there and at 3.8.3. The real reason to re-mirror is duller and
-> more general: **anything upstream changes outside our four files.**
+**The 3.8.4 sync makes this worse than a mixed-Python engine, and the `COPY` cannot reach
+it at all:** upstream renamed the package, so a 3.8.4 overlay writes `/code/modules/*.py`
+into an image whose code still lives in `/code/opendm/`. Nothing would import our files.
+The VERSION guard catches it first, which is the only reason it is not a silent disaster.
+
+> ⚠️ **Do not reuse the reasoning from the 3.8.2 → 3.8.3 sync here.** That one did *not*
+> change OpenSfM: the mirror was tagged `v3.8.2-0f3864ea`, `0f3864ea` was the last bump,
+> and the pin was `029bf053` on both sides. **3.8.4 is different** — two more bumps put it
+> at `a125a3d1`, so this re-mirror genuinely recompiles OpenSfM, and four-band
+> reconstruction's +23–71% track-length numbers were all measured on `029bf053`. Re-measure
+> before quoting them against a 3.8.4 engine. The general rule still holds and is still the
+> real reason to re-mirror: **anything upstream changes outside our four files.**
 
 `agro.Dockerfile` now carries a **VERSION guard** that compares the repo's `VERSION`
 against the base image's `/code/VERSION` and fails the build when they differ. Same
@@ -183,13 +191,32 @@ otherwise reveal, and every other mechanism in the chain fails silently.
    - Merged PRs keep pointing at the pre-rebase commits. That is expected; the backup tag
      is what keeps them reachable.
 3. Check what upstream touched in *our* four files —
-   `git log --oneline <old>..upstream/master -- opendm/multispectral.py opendm/photo.py stages/run_opensfm.py stages/mvstex.py`
+   `git log --oneline <old>..upstream/master -- modules/multispectral.py modules/photo.py stages/run_opensfm.py stages/mvstex.py`
    — and read those diffs, even when the sync is clean. **A clean auto-merge is not a
    safe auto-merge.** In the 3.8.2 → 3.8.3 sync, upstream added `DLS:HorizontalIrradiance`
    as a source for `horizontal_irradiance`, and our DLS path is gated on M3M photos having
    *no* `horizontal_irradiance` — a tag the M3M happens not to write, checked with
    exiftool on real imagery rather than reasoned about. Had it written one, a zero-conflict
    merge would have silently disabled `prepare_dji_irradiance` on every flight.
+
+   The 3.8.3 → 3.8.4 sync produced the same shape again, and this time the tag **is**
+   present. `fb1586ea` makes upstream trust `RtkStdLon/Lat/Hgt` only when
+   `@drone-dji:RtkFlag == 50` (RTK fixed). Our M3M imagery carries all three tags with
+   **`RtkFlag = 16`** — single-point, not fixed — on **1884 of 1884 images across two
+   sample flights**, so every photo now returns `None` from `get_gps_dop()`.
+
+   Consequence, traced rather than assumed: `to_opensfm_exif` falls back to
+   `[gps_accuracy, gps_accuracy * 3]`, and `stages/dataset.py` overrides per-photo DOP
+   **only when `--gps-accuracy` is explicitly passed**. So:
+
+   - flights where the app sets `--gps-accuracy` (its ≥50%-fixed tiers) — **no change**,
+     the override already discarded the per-photo values
+   - flights where it does not (every `RtkFlag = 16` flight) — the GPS prior loosens from
+     the measured 1.19 m / 2.21 m to ODX's default **3 m / 9 m**
+
+   That is probably *more* correct, since trusting a 1.19 m standard deviation from a
+   single-point solution was over-confident. But it moves bundle-adjustment weighting on
+   real flights, so **re-measure GPS residuals before quoting the old numbers.**
 4. Update `VERSION` references, the merge base, and the AGPL §5(a) date range in
    `FORK.md`, `README.md` and this file.
 5. `./agro_verify.sh .` and `./agro_test.sh --docker`.
@@ -201,11 +228,26 @@ otherwise reveal, and every other mechanism in the chain fails silently.
 
 ```
 v<odx-version>-<upstream-sha>-m3m-<fork-sha>
-e.g.   v3.8.2-0f3864ea-m3m-171a0eb5
+e.g.   v3.8.2-0f3864ea-m3m-b9f84514     <- what production actually ran as of 2026-10-16
 ```
 
 **This is the fastest way to answer "is my change deployed?"** Read the tag, compare
 `<fork-sha>` against this branch's log.
+
+> 🛑 **A rebase breaks this mechanism, and it is already broken.** The deployed tag above
+> ends in `b9f84514`, the pre-rebase DD-200 revert commit. The 2026-08-31 rebase orphaned
+> it: it is **no longer an ancestor of the shipping branch**, so `git log` from it fails
+> and the tag reads as though it names a commit we never shipped.
+>
+> It survives only through the backup tags. To resolve a pre-rebase deployed sha:
+>
+> ```bash
+> git merge-base --is-ancestor <sha> backup/pre-rebase-2026-08-31 && \
+>   git log -1 --format=%s <sha>          # then find that subject on the branch
+> ```
+>
+> `b9f84514` → `166280d5`. **Every rebase must leave a pushed `backup/` tag**, or the
+> currently-deployed image becomes unidentifiable.
 
 ### ⚠️ CI verifies and tests, but does NOT build or push the image
 
@@ -272,7 +314,7 @@ the engine means editing that digest, which is a normal app-repo PR.
 
 ## 4. What we changed, and where it is called from
 
-### `opendm/multispectral.py`
+### `modules/multispectral.py`
 
 **Camera gate.**
 ```python
@@ -370,7 +412,7 @@ so three quarters of the imagery contributes nothing to the geometry. For an M3M
 returns every band's photos. Track length rose 23–71% across three flights; two-view tracks
 fell from 64.8% to 38.1% on the weakest.
 
-Its single caller is `OSFMContext.setup` in `opendm/osfm.py`, which writes whatever comes
+Its single caller is `OSFMContext.setup` in `modules/osfm.py`, which writes whatever comes
 back into `image_list.txt` — **which is why no file outside this fork needed to change.**
 Do not "clean this up" by moving the branch into `osfm.py`; that widens the overlay from
 four files to five for no gain.
@@ -384,7 +426,7 @@ Band alignment is deliberately **left in place**. The bands should now land corr
 their own geometry, but that is a claim to verify before removing a correction that
 demonstrably fixed registration.
 
-### `opendm/photo.py`
+### `modules/photo.py`
 
 Five XMP tags parsed that upstream ignores — `CalibratedOpticalCenterX/Y`,
 `CalibratedHMatrix`, `FlightXSpeed`, `FlightYSpeed`, and `drone-dji:BlackLevel` (the
@@ -466,6 +508,8 @@ So the assertion checks:
 - **no** make-level `camera_make == "DJI"` guard survives in `mvstex.py` /
   `run_opensfm.py`
 - **no** `log.ODM_WARNING` anywhere
+- **no** `fy=fx` in `resize_match` — upstream's y-scale typo, which an upstream sync can
+  hand straight back to us (see §4)
 - all four files `py_compile`
 
 **When you add a correction, add it to the assertion.** An unasserted correction is one
@@ -480,7 +524,7 @@ refactor away from being silently absent.
   had to be learned three times: once by inspecting `odm-worker:latest` when the job had
   actually run `odx-worker:latest`, and once by reading a working tree 84 commits stale
   that showed one patch file where main had four.
-- **`--matcher-neighbors N` silently disables graph matching.** `opendm/osfm.py:238` —
+- **`--matcher-neighbors N` silently disables graph matching.** `modules/osfm.py:238` —
   passing *any* value sets `matcher_graph_rounds = 0`. The default (`0`) is not "no
   neighbours", it is a different and better strategy. We shipped `16` for months and it
   cost roughly half our reconstruction quality. The round count differs by engine: **20
@@ -526,6 +570,19 @@ path and the exact commands are in the app repo at
 close it: build `agro.Dockerfile`, push with a two-parent tag, bump the digest in the app
 repo's worker Dockerfile. Worth doing the moment a fix merges — a merged fix that nobody
 builds is indistinguishable from an unfixed bug in production.
+
+**Verified state as of 2026-10-16**, so the next person starts from fact rather than
+re-deriving it: production pins `engine-odx-agronome@sha256:72a42c05`, **built 2026-08-19
+and not rebuilt since**. The 2026-09-01 app-repo commit that looks like an engine bump
+(`a5dcf17dd`) is not one — it only moved the same digest into `ARG ODM_ENGINE_DIGEST`.
+
+Every one of this fork's own corrections *is* in that image (four-band, DD-196 provenance
+and the DD-200 revert all landed on or before 2026-08-19). What is **not** deployed is
+upstream: production runs the ODX **3.8.2** mirror, so it lacks 3.8.3 and 3.8.4 entirely —
+percentile GSD, the two GSD robustness fixes, the RTK-fixed-only fix, the COG change and
+two OpenSfM bumps. The VERSION guard is why: it has been correctly refusing to build a
+mixed engine since 2026-08-31, which is the intended behaviour and also eight weeks of
+nobody noticing a guard held the door shut.
 
 ### Owed
 

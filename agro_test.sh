@@ -38,14 +38,14 @@ KNOWN_FAILURES=(
 # Pinned so a CI result means something. If Docker Hub prunes this digest the pull
 # fails loudly — re-pin from `docker buildx imagetools inspect webodm/odx:latest`, or
 # from our own engine-odx mirror in Artifact Registry.
-ODX_IMAGE="${ODX_IMAGE:-webodm/odx@sha256:a4cdbbaf7a68cf8c15d7856a935703d5374c8c1ce03d9b93e51f07e3a7f1185f}"
+ODX_IMAGE="${ODX_IMAGE:-webodm/odx@sha256:e3106d72d85f95321cf4ca4a921a9eb4b40fc711d195862121437080cab47a1e}"
 
 if [ "${1:-}" = "--docker" ]; then
     here="$(cd "$(dirname "$0")" && pwd)"
     # The suite writes into tests/assets/output, so the mounts must be writable.
     exec docker run --rm --platform linux/amd64 \
         -v "$here/tests:/code/tests" \
-        -v "$here/opendm:/code/opendm" \
+        -v "$here/modules:/code/modules" \
         -v "$here/stages:/code/stages" \
         -v "$here/agro_test.sh:/code/agro_test.sh:ro" \
         --entrypoint bash "$ODX_IMAGE" -c 'cd /code && ./agro_test.sh'

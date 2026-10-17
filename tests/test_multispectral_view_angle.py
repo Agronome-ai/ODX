@@ -6,7 +6,7 @@ import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 
-from opendm import multispectral
+from modules import multispectral
 
 OUT = "tests/assets/output"
 

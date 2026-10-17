@@ -19,12 +19,12 @@ forked, reviewed, and argued with — not as a supported product.
 | | |
 |---|---|
 | upstream | `https://github.com/WebODM/ODX` |
-| merge base | [`18813214`](https://github.com/WebODM/ODX/commit/18813214) (upstream `master`, 2026-08-31) |
-| ODX version at that base | **3.8.3** (`VERSION`) |
+| merge base | [`6a75a351`](https://github.com/WebODM/ODX/commit/6a75a351) (upstream `master`, 2026-10-16) |
+| ODX version at that base | **3.8.4** (`VERSION`) |
 | shipping branch | **`agronome/dji-m3m-multispectral`** — the default branch of this repo |
 | `master` | a **verbatim mirror of upstream**, deliberately 0 commits ahead |
 | size | 15 files, ~2,700 lines added |
-| modified | 2026-08-01 – 2026-08-31 |
+| modified | 2026-08-01 – 2026-10-16 |
 
 `master` being a clean mirror is what makes the fork legible: `git diff master...HEAD` is
 *exactly* what we changed and nothing else. Please keep that property if you contribute.
@@ -34,11 +34,11 @@ forked, reviewed, and argued with — not as a supported product.
 ODX is licensed under the **GNU Affero General Public License v3.0**, and so is this fork.
 
 In satisfaction of AGPL-3.0 §5(a): the following files have been **modified by Agronome AI
-Inc. between 2026-08-01 and 2026-08-31**, relative to upstream commit `18813214`:
+Inc. between 2026-08-01 and 2026-10-16**, relative to upstream commit `6a75a351`:
 
 ```
-opendm/multispectral.py
-opendm/photo.py
+modules/multispectral.py
+modules/photo.py
 stages/run_opensfm.py
 stages/mvstex.py
 .github/workflows/test-build-prs.yml
@@ -66,7 +66,7 @@ Anything not listed above is upstream's, unmodified.
 git clone https://github.com/Agronome-ai/ODX.git && cd ODX
 
 git diff master...HEAD --stat      # everything we changed, and nothing else
-git diff master...HEAD -- opendm/multispectral.py   # the bulk of it
+git diff master...HEAD -- modules/multispectral.py   # the bulk of it
 
 ./agro_verify.sh .                 # the applied-assertion. seconds, no Docker, no auth
 ./agro_test.sh --docker            # ODX's own suite, in a pinned public webodm/odx image
@@ -86,7 +86,7 @@ Everything below is gated on **camera model**, never make. `_is_m3m(photo)` requ
 coefficients to a Mavic 3 Enterprise and produce a fully-formed, silently wrong product.
 `agro_verify.sh` fails the build if a make-level guard reappears.
 
-### 3.1 Radiometry — `opendm/multispectral.py`
+### 3.1 Radiometry — `modules/multispectral.py`
 
 **DLS irradiance normalisation** (`prepare_dji_irradiance`)
 The M3M's downwelling light sensor reports `drone-dji:Irradiance` per frame, but no
@@ -95,21 +95,17 @@ The M3M's downwelling light sensor reports `drone-dji:Irradiance` per frame, but
 and consume it from `compute_irradiance` / `dn_to_reflectance`. Called once per run from
 `stages/run_opensfm.py`, before the undistort pipeline.
 
-**Vignette sense** (`vignette_map`)
-DJI's vignette polynomial is already expressed in the *correction* sense, unlike the
-vendors upstream handles. The DJI branch therefore does **not** invert it:
-
-```python
-if photo.camera_make != "DJI":
-    vignette = 1.0 / vignette
-```
-
-Inverting it doubles the error instead of removing it. This looks like a bug and is not.
+> **Not ours — upstream's, and listed here only so nobody "fixes" it.** The DJI branch in
+> `vignette_map` (`if photo.camera_make != "DJI": vignette = 1.0 / vignette`, carrying
+> upstream's own comment "DJI is special apparently") is present at the merge base and we
+> did not write it. DJI's polynomial is already in the *correction* sense, so inverting it
+> doubles the error instead of removing it. It looks like a bug and is not. Earlier
+> revisions of this document listed it under "what changed", which overclaimed.
 
 **Black level from the DJI namespace** — the M3M stores black level only in
 `drone-dji:BlackLevel`; the standard tag is absent.
 
-### 3.2 Band alignment — `opendm/multispectral.py`, `opendm/photo.py`
+### 3.2 Band alignment — `modules/multispectral.py`, `modules/photo.py`
 
 **Use the factory homography** (`dji_hmatrix`, `dji_band_warp`)
 DJI ships `drone-dji:CalibratedHMatrix` per band. `compute_homography` now tries the
@@ -120,7 +116,21 @@ factory matrix first and falls back to ECC estimation. Five XMP tags are parsed 
 **Solve the ECC fallback at native resolution** (`ECC_MAX_SIZE_NATIVE = 4096`)
 The fallback previously solved at half resolution, which quantised the result.
 
-### 3.3 View-angle and across-swath normalisation — `opendm/multispectral.py`
+**Fix upstream's `resize_match` y-scale typo.** `resize_match` computed `fy` and then
+passed `fx` in its place, so a band whose aspect ratio differs from the primary's was
+scaled by the wrong vertical factor. **Dormant on the M3M** — all four MS bands are
+2592×1944, so the resize branch never fires — and live on any mixed-dimension rig, such as
+a MicaSense Altum thermal or a RedEdge-P panchromatic band. We carry the fix because it is
+unambiguous, not because we need it, and `agro_verify.sh` fails the build if an upstream
+sync hands the typo back. Reported upstream as
+[WebODM/ODX#41](https://github.com/WebODM/ODX/issues/41), which was **closed as completed
+with the typo still in place**.
+
+Upstream's #41 also reports that `borderValue=0` on the band warp creates sharp gradients
+to zero at image borders and hence negative reflectance. **We have not changed that**, and
+deliberately: it alters real pixels on our own path, and we have not measured it.
+
+### 3.3 View-angle and across-swath normalisation — `modules/multispectral.py`
 
 The largest and most delicate piece (`normalize_view_angle`), called from
 `stages/run_opensfm.py` **after** the primary-band undistort pass.
@@ -182,7 +192,7 @@ has already failed:
 The sidecar sits inside the checkpoint mirror, so a resumed run — whose opensfm stage does
 not execute at all — still reports what its earlier attempt measured.
 
-### 3.5 Four-band reconstruction — `opendm/multispectral.py`, `stages/run_opensfm.py`
+### 3.5 Four-band reconstruction — `modules/multispectral.py`, `stages/run_opensfm.py`
 
 Upstream reconstructs from **one** primary band and copies that band's solved pose onto
 the other three (`add_shots_to_reconstruction`), so three quarters of the imagery
@@ -336,6 +346,9 @@ Stated plainly, because a fork that only lists its wins is not reviewable.
   build the dataset that would let those thresholds be set on evidence.
 - **Band alignment and four-band reconstruction may now be redundant with each other**
   (§3.5). Unverified.
+- **The four-band numbers predate the current OpenSfM.** The +23–71% track-length gains
+  were measured on OpenSfM `029bf053`; ODX 3.8.4 pins `a125a3d1`. Treat them as indicative
+  until re-measured.
 - **The corrections are validated on outputs, not against ground truth reflectance.** We
   have no calibrated reflectance panel measurements across these flights.
 
@@ -343,7 +356,7 @@ Traps we have already paid for — the ones most likely to waste your afternoon 
 [`CLAUDE.md`](CLAUDE.md) §6. Two worth repeating here because they are not M3M-specific
 and cost us real quality:
 
-- **`--matcher-neighbors N` silently disables graph matching.** `opendm/osfm.py` — passing
+- **`--matcher-neighbors N` silently disables graph matching.** `modules/osfm.py` — passing
   *any* value sets `matcher_graph_rounds = 0`. The default (`0`) is not "no neighbours",
   it is a different and better strategy. We shipped `16` for months.
 - **`--matcher-order` is a no-op on georeferenced data**, and every drone dataset is
@@ -353,7 +366,7 @@ and cost us real quality:
 
 ## 7. Building and running
 
-The corrections are pure Python under `opendm/` and `stages/`, so there is nothing to
+The corrections are pure Python under `modules/` and `stages/`, so there is nothing to
 recompile. `agro.Dockerfile` overlays them onto a pre-built ODX image by `COPY`, and runs
 `agro_verify.sh` inside the image so the build fails if the overlay did not apply:
 
@@ -366,7 +379,7 @@ version tags, and a floating tag makes the build unreproducible.
 
 **The base must be built from the same upstream commit this branch is based on**, not
 merely "some ODX". The `COPY` carries four files; everything else is whatever the base
-image already had. Overlay 3.8.3's four onto a 3.8.2 base and you get a *mixed engine* —
+image already had. Overlay 3.8.4's four onto a 3.8.3 base and you get a *mixed engine* —
 these corrections at the new version, and `gsd.py`, `orthophoto.py`, `config.py` still at
 the old one. It runs and it looks right.
 
