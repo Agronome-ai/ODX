@@ -301,6 +301,36 @@ verbatim and where a source-build regression still means something. **Expect a s
 conflict there on an upstream rebase** — a 2-line trigger edit was chosen over deleting
 the file precisely because it is cheap to re-apply.
 
+### ⚠️ Upstream's three publish workflows are DISABLED, and git does not show it
+
+`publish-docker.yml`, `publish-docker-gpu.yml` and `publish-windows.yml` all trigger on
+`push` to `master` and on `v*` tags. `master` is our verbatim upstream mirror, so **every
+mirror sync fired all three**, and all three failed every time — `docker/login-action`
+exits with `Username and password required` because this fork has no Docker Hub secrets
+and must never have any: succeeding would mean pushing images into upstream's namespace.
+They failed on 2026-08-31 and again on 2026-10-17.
+
+They are now **disabled at the repository level** (`gh workflow disable`), not edited:
+
+```bash
+gh workflow list --repo Agronome-ai/ODX --all      # shows `disabled_manually`
+```
+
+**That state lives in GitHub, not in git** — which is the trap. The YAML on `master` still
+reads `branches: [master]`, so anyone reading the files concludes these run. They do not.
+A repository-level disable was chosen over a trigger edit for one reason: editing them
+would mean **committing to `master`**, and `master` being 0 commits ahead of upstream is
+what makes `git diff master...HEAD` an honest statement of the fork (§1). A fourth
+workflow, `test-build-prs.yml`, is narrowed by edit instead — but that edit lives on *this*
+branch, where committing is normal.
+
+Why the distinction matters: for a `push` event GitHub reads the workflow files **from the
+pushed commit**, so an edit on this branch could never have affected a `master` push
+anyway. A disable is the only mechanism that reaches them without touching the mirror.
+
+If a future sync needs these to run (it should not — we never publish from this fork),
+re-enable with `gh workflow enable`, do not commit to `master`.
+
 ### Who consumes it
 
 The app repo's worker image pins `engine-odx-agronome` **by digest** as its base. Bumping
